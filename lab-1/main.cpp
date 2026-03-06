@@ -74,13 +74,31 @@ public:
         return std::sqrt(value);
     }
 
+    Vector split(int parts, int part) const {
+        int vSize = _size/parts;
+        int mod = _size%parts;
+        int index = 0;
+
+        if(part < mod) vSize++;  
+        else index = mod;
+
+        index += vSize*part;
+
+        Vector vec(vSize);
+        
+        for(int i = 0; i < vSize; i++){
+            vec(i)=_values[index+i];
+        }
+        return vec;
+    }
+
     std::string toString() const{
         if(_values == nullptr) throw std::runtime_error("Use after free");
         std::string str = "(";
         for(int i = 0; i < _size; i++){
             str+=std::to_string(_values[i]) + ", ";
         }
-        str+=")";
+        str+=")\n";
         return str;
     }
 };
@@ -149,6 +167,10 @@ Vector& operator* (Vector& other) const{
         other(i) = temp(i);
     }
     return other;
+}
+
+Matrix split(int parts, int part){
+
 }
 
 std::string to_string() const{
