@@ -16,7 +16,7 @@ public:
     }
     ~Vector(){
         if(_values == nullptr) return;
-        delete _values;
+        delete[] _values;
         _values = nullptr;
     }
 
@@ -31,6 +31,11 @@ public:
     }
 
     double& operator() (int i){
+        if(_values == nullptr) throw std::runtime_error("Use after free");
+        if(i < 0 || i >= _size) throw std::invalid_argument("Index out of range");
+        return _values[i];
+    }
+    double operator() (int i) const{
         if(_values == nullptr) throw std::runtime_error("Use after free");
         if(i < 0 || i >= _size) throw std::invalid_argument("Index out of range");
         return _values[i];
@@ -57,7 +62,7 @@ public:
     Vector& operator= (const Vector& other){
         if(other._values == nullptr) throw std::invalid_argument("Vector is empty");
         if(_size != other._size){
-            if(_values) delete _values;
+            if(_values) delete[] _values;
             _values = new double[other.size()];
             _size = other._size;
         }
@@ -74,7 +79,12 @@ public:
         return std::sqrt(value);
     }
 
-    Vector split(int parts, int part) const {
+    Vector split(int part, int parts) const {
+        if(parts > size()) throw std::invalid_argument("can`t split vector to less parts than it`s size");
+        if(part >= parts) throw std::invalid_argument("part can`t be greater than parts");
+        if(part < 0) throw std::invalid_argument("part can`t be less than zero");
+        if(parts < 1) throw std::invalid_argument("parts can`t be less than one");
+
         int vSize = _size/parts;
         int mod = _size%parts;
         int index = 0;
@@ -85,11 +95,28 @@ public:
         index += vSize*part;
 
         Vector vec(vSize);
-        
-        for(int i = 0; i < vSize; i++){
-            vec(i)=_values[index+i];
-        }
+
+        std::memcpy(vec._values, &_values[index], sizeof(double)*vSize);
+
         return vec;
+    }
+
+    void insert(int part, int parts, const Vector& other){
+        if(parts > size()) throw std::invalid_argument("can`t split vector to less parts than it`s size");
+        if(part >= parts) throw std::invalid_argument("part can`t be greater than parts");
+        if(part < 0) throw std::invalid_argument("part can`t be less than zero");
+        if(parts < 1) throw std::invalid_argument("parts can`t be less than one");
+
+        int vSize = _size/parts;
+        int mod = _size%parts;
+        int index = 0;
+
+        if(part < mod) vSize++;  
+        else index = mod;
+
+        index += vSize*part;
+        
+        std::memcpy(&_values[index], other._values, sizeof(double)*vSize);
     }
 
     std::string toString() const{
@@ -117,74 +144,116 @@ private:
     }
 
 public:
-Matrix(int sizeX, int sizeY): _sizeX(sizeX), _sizeY(sizeY) {
-    if(sizeX <= 0 || sizeY <=0) throw std::invalid_argument("Matrix size must be greater then zero");
-    _values = new double[sizeX*sizeY];
-}
+    Matrix(int sizeX, int sizeY): _sizeX(sizeX), _sizeY(sizeY) {
+        if(sizeX <= 0 || sizeY <=0) throw std::invalid_argument("Matrix size must be greater then zero");
+        _values = new double[sizeX*sizeY];
+    }
 
-~Matrix(){
-    if(_values == nullptr) return;
-    delete _values;
-    _values = nullptr;
-}
+    ~Matrix(){
+        if(_values == nullptr) return;
+        delete[] _values;
+        _values = nullptr;
+    }
 
-void fill(){
-    for(int y = 0; y < _sizeY; y++){
-        for(int x = 0; x < _sizeX; x++){
-            get(x,y) = x==y ? 2 : 1;
+    void fill(){
+        for(int y = 0; y < _sizeY; y++){
+            for(int x = 0; x < _sizeX; x++){
+                get(x,y) = x==y ? 2 : 1;
+            }
         }
     }
-}
 
-int sizeX() const{
-    return _sizeX;
-}
-int sizeY() const{
-    return _sizeY;
-}
+    int sizeX() const{
+        return _sizeX;
+    }
+    int sizeY() const{
+        return _sizeY;
+    }
 
-double& operator() (int x, int y){
-    if(_values == nullptr) throw std::runtime_error("Use after free");
-    if(x < 0 || y < 0 || x >= _sizeX || y >= _sizeY ) throw std::invalid_argument("Index out of range");
-    return get(x,y);
-}
+    double& operator() (int x, int y){
+        if(_values == nullptr) throw std::runtime_error("Use after free");
+        if(x < 0 || y < 0 || x >= _sizeX || y >= _sizeY ) throw std::invalid_argument("Index out of range");
+        return get(x,y);
+    }
 
-Vector& operator* (Vector& other) const{
-    if(_values == nullptr) throw std::runtime_error("Use after free");
-    if(other.size() != _sizeX) throw std::invalid_argument("Vector size must be equal to matrix x size");
-    Vector temp(_sizeX);
-    int size=std::min(_sizeX,_sizeY);
-    for(int y = 0; y < size; y++){
-        for(int x = 0; x < _sizeX; x++){
-            temp(y) += get(x,y) * other(x);
+    Matrix& operator= (const Matrix& other){
+        if(other._values == nullptr) throw std::invalid_argument("Matrix is empty");
+        if((_sizeX * _sizeY) != (other._sizeX * other._sizeY)){
+            if(_values) delete[]_values;
+            _sizeX = other._sizeX;
+            _sizeY = other._sizeY;
+            _values = new double[other._sizeX * other._sizeY];
         }
+        std::memcpy(_values, other._values, sizeof(double)*_sizeX*_sizeY);
+        return *this;
     }
-    if(_sizeX == _sizeY){
-        other=temp;
-        return other;
-    }
-    for(int i = 0; i < size; i++){
-        other(i) = temp(i);
-    }
-    return other;
-}
 
-Matrix split(int parts, int part){
-
-}
-
-std::string to_string() const{
-    if(_values == nullptr) throw std::runtime_error("Use after free");
-    std::string str;
-    for(int y = 0; y < _sizeY; y++){
-        str+="| ";
-        for(int x = 0; x < _sizeX; x++){
-            str+=std::to_string(get(x,y)) + ", ";
+    Vector operator*(const Vector& other) const{
+        if(_values == nullptr) throw std::runtime_error("Use after free");
+        if(other.size() != _sizeX) throw std::invalid_argument("Vector size must be equal to matrix x size");
+        Vector temp(_sizeX);
+        int size=std::min(_sizeX,_sizeY);
+        for(int y = 0; y < size; y++){
+            for(int x = 0; x < _sizeX; x++){
+                temp(y) += get(x,y) * other(x);
+            }
         }
-        str+="|\n";
+        return temp;
     }
-    return str;
-}
+
+    Matrix split(int part, int parts){
+        if(parts > sizeY()) throw std::invalid_argument("can`t split Matrix to less parts than it`s size");
+        if(part >= parts) throw std::invalid_argument("part can`t be greater than parts");
+        if(part < 0) throw std::invalid_argument("part can`t be less than zero");
+        if(parts < 1) throw std::invalid_argument("parts can`t be less than one");
+
+        int ySize = _sizeY/parts;
+        int mod = _sizeY%parts;
+        int index = 0;
+
+        if(part < mod) ySize++;  
+        else index = mod;
+
+        index += ySize*part;
+
+        Matrix mat(sizeX(), ySize);
+        
+        std::memcpy(mat._values, &(get(0,index)), sizeof(double)*_sizeX*ySize);
+
+        return mat;
+    }
+
+    void insert(int part, int parts, const Matrix& other){
+        if(parts > sizeY()) throw std::invalid_argument("can`t split Matrix to less parts than it`s size");
+        if(part >= parts) throw std::invalid_argument("part can`t be greater than parts");
+        if(part < 0) throw std::invalid_argument("part can`t be less than zero");
+        if(parts < 1) throw std::invalid_argument("parts can`t be less than one");
+
+        int ySize = _sizeY/parts;
+        int mod = _sizeY%parts;
+        int index = 0;
+
+        if(part < mod) ySize++;  
+        else index = mod;
+
+        index += ySize*part;
+
+        
+        std::memcpy(&(get(0,index)), other._values, sizeof(double)*_sizeX*ySize);
+    }
+
+    std::string toString() const{
+        if(_values == nullptr) throw std::runtime_error("Use after free");
+        std::string str;
+        for(int y = 0; y < _sizeY; y++){
+            str+="| ";
+            for(int x = 0; x < _sizeX; x++){
+                str+=std::to_string(get(x,y)) + ", ";
+            }
+            str+="|\n";
+        }
+        return str;
+    }
 
 };
 
@@ -195,27 +264,26 @@ public:
         const double epsilon = 0.00001;
         double tau  = 0.001; 
 
-        Vector xNext(b.size());
-        Vector xPrev(b.size());
+        Vector x(b.size());
         double bNorm = 1/b.norm();
         double prevNorm = 1/epsilon;
+
         bool isLess = false;
-        do{
-            A*xPrev;
-            xPrev -= b;
+        while(!isLess){
+            Vector r = A*x;
+            r -= b;
 
-            double norm = xPrev.norm()*bNorm;
-            isLess = norm < epsilon;
-
+            double norm = r.norm()*bNorm;
             if(prevNorm < norm) tau*=-1;
             prevNorm = norm;
 
-            xPrev*=tau;
-            xNext-=xPrev;
+            r*=tau;
+            x-=r;
+            
+            isLess = norm < epsilon;
+        }
 
-            xPrev = xNext;
-        }while(!isLess);
-        return xNext;
+        return x;
     }
 };
 
@@ -225,9 +293,8 @@ int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    printf("i`m a %d of %d\n",rank+1,size);
 
-    int N = 3;
+    int N = 10;
 
     Matrix A(N,N);
     Vector b(N);
