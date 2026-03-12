@@ -3,6 +3,8 @@
 #include <string>
 #include <cstring>
 #include <cmath>
+#include <chrono>
+#include <fstream>
 
 static int RANK=0;
 static int SIZE=0;
@@ -327,10 +329,10 @@ public:
     }
 };
 
-int main(int argc, char** argv) {
-    MPI_Init(&argc, &argv);
-    MPI_Comm_size(MPI_COMM_WORLD, &SIZE);
-    MPI_Comm_rank(MPI_COMM_WORLD, &RANK);
+
+std::chrono::microseconds Calculate(){
+
+    std::chrono::microseconds duration;
 
     int N = 10000;
 
@@ -339,6 +341,8 @@ int main(int argc, char** argv) {
         Vector b(N);
         A.fill();
         b.fill();
+        
+        auto start = std::chrono::high_resolution_clock::now();
 
         Matrix localA = A.split(0,SIZE);
         Vector localB = b.split(0,SIZE);
@@ -353,13 +357,15 @@ int main(int argc, char** argv) {
         }
 
         Vector x = SimpleIterator::solve(localA,localB);
-        std::cout << x.toString();
 
+        auto end = std::chrono::high_resolution_clock::now();
+        duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        
     }
     else{
         int localSize;
         MPI_Recv(&localSize,1,MPI_INT,0,0,MPI_COMM_WORLD,MPI_STATUS_IGNORE);
-    
+        
         Matrix localA(N,localSize);
         MPI_Recv(localA.data(),N*localSize,MPI_DOUBLE,0,1,MPI_COMM_WORLD,MPI_STATUS_IGNORE);
         Vector localB(localSize);
@@ -368,6 +374,29 @@ int main(int argc, char** argv) {
         SimpleIterator::solve(localA,localB);
     }
 
+    return duration;
+}
+
+
+int main(int argc, char** argv) {
+    MPI_Init(&argc, &argv);
+    MPI_Comm_size(MPI_COMM_WORLD, &SIZE);
+    MPI_Comm_rank(MPI_COMM_WORLD, &RANK);
+
+    std::chrono::microseconds min;
+    for(int i=0; i < 10; i++){
+        auto duration = Calculate();
+        if(min > duration) min = duration;
+    }
+    
+    if(RANK == 0){
+        std::ofstream file("V1_test.csv", std::ios::app | std::ios::out);
+        if (file.is_open()) {
+            file << std::to_string(SIZE) << "," << min.count() << std::endl;
+            file.close();
+        } 
+        else std::cerr << "Не удалось открыть файл" << std::endl;
+    }
 
     MPI_Finalize();
     return 0;
