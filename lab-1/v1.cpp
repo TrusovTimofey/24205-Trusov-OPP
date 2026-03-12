@@ -4,6 +4,9 @@
 #include <cstring>
 #include <cmath>
 
+static int RANK=0;
+static int SIZE=0;
+
 class Vector{
 private:
     int _size;
@@ -18,6 +21,14 @@ public:
         if(_values == nullptr) return;
         delete[] _values;
         _values = nullptr;
+    }
+
+    Vector(const Vector& other) : _size(other._size), _values(new double[other._size]) {
+        std::memcpy(_values, other._values, sizeof(double) * _size);
+    }
+
+    double* data(){
+        return _values;
     }
 
     void fill(){
@@ -155,6 +166,14 @@ public:
         _values = nullptr;
     }
 
+    Matrix(const Matrix& other) : _sizeX(other._sizeX), _sizeY(other._sizeY), _values(new double[other._sizeX*other._sizeY]) {
+        std::memcpy(_values, other._values, sizeof(double) * _sizeX* _sizeY);
+    }
+
+    double* data(){
+        return _values;
+    }
+
     void fill(){
         for(int y = 0; y < _sizeY; y++){
             for(int x = 0; x < _sizeX; x++){
@@ -191,8 +210,8 @@ public:
     Vector operator*(const Vector& other) const{
         if(_values == nullptr) throw std::runtime_error("Use after free");
         if(other.size() != _sizeX) throw std::invalid_argument("Vector size must be equal to matrix x size");
-        Vector temp(_sizeX);
         int size=std::min(_sizeX,_sizeY);
+        Vector temp(size);
         for(int y = 0; y < size; y++){
             for(int x = 0; x < _sizeX; x++){
                 temp(y) += get(x,y) * other(x);
@@ -259,51 +278,96 @@ public:
 
 class SimpleIterator{
 public:
-    static Vector solve(const Matrix& A, const Vector& b){
-        if(A.sizeX() != b.size()) throw std::invalid_argument("Conteiners must have the same size");
+        static Vector solve(const Matrix& A, const Vector& b) {
         const double epsilon = 0.00001;
-        double tau  = 0.001; 
-
-        Vector x(b.size());
+        double tau = 1.9/(A.sizeX()+1);
+        
+        Vector x(A.sizeX());        
         double bNorm = 1/b.norm();
         double prevNorm = 1/epsilon;
-
         bool isLess = false;
-        while(!isLess){
-            Vector r = A*x;
-            r -= b;
+        
+        while (!isLess) {
+            MPI_Bcast(x.data(), x.size(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-            double norm = r.norm()*bNorm;
-            if(prevNorm < norm) tau*=-1;
-            prevNorm = norm;
-
-            r*=tau;
-            x-=r;
+            Vector localResult = A*x;
+            localResult -= b;
             
-            isLess = norm < epsilon;
-        }
+            if (RANK == 0) {
+                Vector fullResult(x.size());
+                fullResult.insert(0, SIZE, localResult);
+                
+                for (int source = 1; source < SIZE; source++) {
+                    int partSize;
+                    MPI_Recv(&partSize, 1, MPI_INT, source, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                    Vector tempPart(partSize);
+                    MPI_Recv(tempPart.data(), partSize, MPI_DOUBLE, source, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                    fullResult.insert(source, SIZE, tempPart);
+                }
+                
+                double norm = fullResult.norm() * bNorm;
+                if (prevNorm < norm) tau *= -1;
+                prevNorm = norm;
+                
+                fullResult *= tau;
+                x -= fullResult;
+                
+                isLess = norm < epsilon;
 
+            } else {
+                int partSize = localResult.size();
+                MPI_Send(&partSize, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
+                MPI_Send(localResult.data(), partSize, MPI_DOUBLE, 0, 1, MPI_COMM_WORLD);
+            }
+            
+            MPI_Bcast(&isLess, 1, MPI_C_BOOL, 0, MPI_COMM_WORLD);
+        }
+        
         return x;
     }
 };
 
-
 int main(int argc, char** argv) {
-    int rank, size;
     MPI_Init(&argc, &argv);
-    MPI_Comm_size(MPI_COMM_WORLD, &size);
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &SIZE);
+    MPI_Comm_rank(MPI_COMM_WORLD, &RANK);
 
-    int N = 10;
+    int N = 10000;
 
-    Matrix A(N,N);
-    Vector b(N);
-    A.fill();
-    b.fill();
+    if(RANK == 0){
+        Matrix A(N,N);
+        Vector b(N);
+        A.fill();
+        b.fill();
 
-    Vector x = SimpleIterator::solve(A,b);
+        Matrix localA = A.split(0,SIZE);
+        Vector localB = b.split(0,SIZE);
+        
+        for (int i = 1; i < SIZE; i++)
+        {
+            Matrix local = A.split(i,SIZE);
+            int localSize = local.sizeY();
+            MPI_Send(&localSize,1,MPI_INT,i,0,MPI_COMM_WORLD);
+            MPI_Send(local.data(),N*localSize,MPI_DOUBLE,i,1,MPI_COMM_WORLD);
+            MPI_Send(b.split(i,SIZE).data(),localSize,MPI_DOUBLE,i,2,MPI_COMM_WORLD);
+        }
 
-    std::cout << x.toString();
+        Vector x = SimpleIterator::solve(localA,localB);
+        std::cout << x.toString();
+
+    }
+    else{
+        int localSize;
+        MPI_Recv(&localSize,1,MPI_INT,0,0,MPI_COMM_WORLD,MPI_STATUS_IGNORE);
+    
+        Matrix localA(N,localSize);
+        MPI_Recv(localA.data(),N*localSize,MPI_DOUBLE,0,1,MPI_COMM_WORLD,MPI_STATUS_IGNORE);
+        Vector localB(localSize);
+        MPI_Recv(localB.data(),localSize,MPI_DOUBLE,0,2,MPI_COMM_WORLD,MPI_STATUS_IGNORE);
+
+        SimpleIterator::solve(localA,localB);
+    }
+
 
     MPI_Finalize();
     return 0;
