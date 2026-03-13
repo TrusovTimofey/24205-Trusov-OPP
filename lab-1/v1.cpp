@@ -383,7 +383,7 @@ int main(int argc, char** argv) {
     MPI_Comm_size(MPI_COMM_WORLD, &SIZE);
     MPI_Comm_rank(MPI_COMM_WORLD, &RANK);
 
-    std::chrono::microseconds min;
+    std::chrono::microseconds min = std::chrono::microseconds::max();
     for(int i=0; i < 10; i++){
         auto duration = Calculate();
         if(min > duration) min = duration;
@@ -392,7 +392,7 @@ int main(int argc, char** argv) {
     if(RANK == 0){
         std::ofstream file("V1_test.csv", std::ios::app | std::ios::out);
         if (file.is_open()) {
-            file << std::to_string(SIZE) << "," << min.count() << std::endl;
+            file << std::to_string(SIZE) << "," << (min.count()*0.001) << std::endl;
             file.close();
         } 
         else std::cerr << "Не удалось открыть файл" << std::endl;
