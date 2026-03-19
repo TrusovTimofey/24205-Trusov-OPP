@@ -4,7 +4,6 @@
 #include <cstring>
 #include <cmath>
 #include <chrono>
-#include <fstream>
 
 static int RANK=0;
 static int SIZE=0;
@@ -19,15 +18,20 @@ public:
         if(size <= 0) throw std::invalid_argument("Index must be a positive integer");
         _values = new double[size]();
     }
+    Vector(const Vector& other) : _size(other._size), _values(new double[other._size]) {
+        std::memcpy(_values, other._values, sizeof(double) * _size);
+    }
+    Vector(int size, double* data): _size(size){
+        if(size <= 0) throw std::invalid_argument("Index must be a positive integer");
+        _values = new double[size]();
+         std::memcpy(_values, data, sizeof(double) * _size);
+    }
     ~Vector(){
         if(_values == nullptr) return;
         delete[] _values;
         _values = nullptr;
     }
 
-    Vector(const Vector& other) : _size(other._size), _values(new double[other._size]) {
-        std::memcpy(_values, other._values, sizeof(double) * _size);
-    }
 
     double* data(){
         return _values;
@@ -98,19 +102,15 @@ public:
         if(part < 0) throw std::invalid_argument("part can`t be less than zero");
         if(parts < 1) throw std::invalid_argument("parts can`t be less than one");
 
-        int vSize = _size/parts;
-        int mod = _size%parts;
-        int index = 0;
-
-        if(part < mod) vSize++;  
-        else index = mod;
-
-        index += vSize*part;
-
-        Vector vec(vSize);
-
-        std::memcpy(vec._values, &_values[index], sizeof(double)*vSize);
-
+        int baseSize = _size / parts;
+        int remainder = _size % parts;
+    
+        int partSize = baseSize + (part < remainder ? 1 : 0);
+        int offset = part * baseSize + std::min(part, remainder);
+    
+        Vector vec(partSize);
+        std::memcpy(vec._values, &_values[offset], sizeof(double) * partSize);
+    
         return vec;
     }
 
@@ -120,16 +120,13 @@ public:
         if(part < 0) throw std::invalid_argument("part can`t be less than zero");
         if(parts < 1) throw std::invalid_argument("parts can`t be less than one");
 
-        int vSize = _size/parts;
-        int mod = _size%parts;
-        int index = 0;
+        int baseSize = _size / parts;
+        int remainder = _size % parts;
 
-        if(part < mod) vSize++;  
-        else index = mod;
-
-        index += vSize*part;
-        
-        std::memcpy(&_values[index], other._values, sizeof(double)*vSize);
+        int partSize = baseSize + (part < remainder ? 1 : 0);
+        int offset = part * baseSize + std::min(part, remainder);
+    
+        std::memcpy(&_values[offset], other._values, sizeof(double) * partSize);
     }
 
     std::string toString() const{
@@ -209,17 +206,17 @@ public:
         return *this;
     }
 
-    Vector operator*(const Vector& other) const{
-        if(_values == nullptr) throw std::runtime_error("Use after free");
-        if(other.size() != _sizeX) throw std::invalid_argument("Vector size must be equal to matrix x size");
-        int size=std::min(_sizeX,_sizeY);
-        Vector temp(size);
-        for(int y = 0; y < size; y++){
+    void multiply(const Vector& vec, Vector& result) const {
+        if(vec.size() != _sizeX) throw std::invalid_argument("Vector size must be equal to matrix x size");
+        if(result.size() != _sizeY) throw std::invalid_argument("Result vector size must be equal to matrix y size");
+        
+        for(int y = 0; y < _sizeY; y++){
+            double sum = 0.0;
             for(int x = 0; x < _sizeX; x++){
-                temp(y) += get(x,y) * other(x);
+                sum += get(x,y) * vec(x);
             }
+            result(y) = sum;
         }
-        return temp;
     }
 
     Matrix split(int part, int parts){
@@ -228,19 +225,16 @@ public:
         if(part < 0) throw std::invalid_argument("part can`t be less than zero");
         if(parts < 1) throw std::invalid_argument("parts can`t be less than one");
 
-        int ySize = _sizeY/parts;
-        int mod = _sizeY%parts;
-        int index = 0;
-
-        if(part < mod) ySize++;  
-        else index = mod;
-
-        index += ySize*part;
-
-        Matrix mat(sizeX(), ySize);
-        
-        std::memcpy(mat._values, &(get(0,index)), sizeof(double)*_sizeX*ySize);
-
+        int baseSize = _sizeY / parts;
+        int remainder = _sizeY % parts;
+    
+        int partSize = baseSize + (part < remainder ? 1 : 0);
+    
+        int offset = part * baseSize + std::min(part, remainder);
+    
+        Matrix mat(_sizeX, partSize);
+        std::memcpy(mat._values, &(get(0, offset)), sizeof(double) * _sizeX * partSize);
+    
         return mat;
     }
 
@@ -250,17 +244,12 @@ public:
         if(part < 0) throw std::invalid_argument("part can`t be less than zero");
         if(parts < 1) throw std::invalid_argument("parts can`t be less than one");
 
-        int ySize = _sizeY/parts;
-        int mod = _sizeY%parts;
-        int index = 0;
+        int baseSize = _sizeY / parts;
+        int remainder = _sizeY % parts;
 
-        if(part < mod) ySize++;  
-        else index = mod;
-
-        index += ySize*part;
-
-        
-        std::memcpy(&(get(0,index)), other._values, sizeof(double)*_sizeX*ySize);
+        int offset = part * baseSize + std::min(part, remainder);
+    
+        std::memcpy(&(get(0, offset)), other._values, sizeof(double) * _sizeX * other.sizeY());
     }
 
     std::string toString() const{
@@ -280,68 +269,104 @@ public:
 
 class SimpleIterator{
 public:
-        static Vector solve(const Matrix& A, const Vector& b) {
+    static Vector solve(const Matrix& A, const Vector& b) {
         const double epsilon = 0.00001;
         double tau = 1.9/(A.sizeX()+1);
-        
-        Vector x(A.sizeX());        
-        double bNorm = 1/b.norm();
-        double prevNorm = 1/epsilon;
-        bool isLess = false;
-        
-        while (!isLess) {
-            MPI_Bcast(x.data(), x.size(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-            Vector localResult = A*x;
-            localResult -= b;
-            
-            if (RANK == 0) {
-                Vector fullResult(x.size());
-                fullResult.insert(0, SIZE, localResult);
-                
-                for (int source = 1; source < SIZE; source++) {
-                    int partSize;
-                    MPI_Recv(&partSize, 1, MPI_INT, source, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                    Vector tempPart(partSize);
-                    MPI_Recv(tempPart.data(), partSize, MPI_DOUBLE, source, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                    fullResult.insert(source, SIZE, tempPart);
-                }
-                
-                double norm = fullResult.norm() * bNorm;
-                if (prevNorm < norm) tau *= -1;
-                prevNorm = norm;
-                
-                fullResult *= tau;
-                x -= fullResult;
-                
-                isLess = norm < epsilon;
+        int N = A.sizeX();
+        int localSize = A.sizeY();
 
-            } else {
-                int partSize = localResult.size();
-                MPI_Send(&partSize, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
-                MPI_Send(localResult.data(), partSize, MPI_DOUBLE, 0, 1, MPI_COMM_WORLD);
-            }
-            
-            MPI_Bcast(&isLess, 1, MPI_C_BOOL, 0, MPI_COMM_WORLD);
+        int *sizes = new int[SIZE];
+        MPI_Allgather(&localSize, 1, MPI_INT, sizes, 1, MPI_INT, MPI_COMM_WORLD);
+
+        std::cout<<"there 4, from " <<RANK<<std::endl;
+
+        int *offsets = new int[SIZE];
+        offsets[0] = 0;
+        for (int i = 1; i < SIZE; i++) {
+            offsets[i] = offsets[i-1] + sizes[i-1];
         }
+  
+        double bNorm;{
+            double localSqrBNorm = 0;
+            for (int i = 0; i < localSize; i++) {
+                localSqrBNorm += b(i) * b(i);
+            }
+            double globalSqrBNorm;
+            MPI_Allreduce(&localSqrBNorm, &globalSqrBNorm, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+            bNorm = 1 / std::sqrt(globalSqrBNorm);
+        }
+
+        std::cout<<"there 5, from " <<RANK<<std::endl;
         
-        return x;
+        Vector x_global(N);
+        Vector x_local(localSize);
+        Vector localRes(localSize);
+
+        bool isLess = false;
+        while (!isLess) {
+            MPI_Allgatherv(x_local.data(), localSize, MPI_DOUBLE, x_global.data(), sizes, offsets, MPI_DOUBLE, MPI_COMM_WORLD);
+            std::cout<<"there 6, from " <<RANK<<std::endl;
+            A.multiply(x_global,localRes);
+            localRes -= b;
+
+            double globalNorm;
+            
+            {
+                double localSqrNorm = 0;
+                for (int i = 0; i < localSize; i++) {
+                    localSqrNorm += localRes(i) * localRes(i);
+                }
+                double globalSqrNorm;
+                MPI_Allreduce(&localSqrNorm, &globalSqrNorm, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+                globalNorm = std::sqrt(globalSqrNorm) * bNorm;
+            }  
+            
+            std::cout<<"there 7, from " <<RANK<<std::endl;
+            localRes*=tau;
+            x_local -= localRes;
+            
+            isLess = globalNorm < epsilon;
+        }
+
+        MPI_Allgatherv(x_local.data(), localSize, MPI_DOUBLE, x_global.data(), sizes, offsets, MPI_DOUBLE, MPI_COMM_WORLD);
+        std::cout<<"there 8, from " <<RANK<<std::endl;
+        delete[] sizes;
+        delete[] offsets;
+        return x_global;
     }
+
 };
 
+bool checkRes(const Vector& x, double epsilon = 1e-5) {
+        if (RANK != 0) return true;
+        
+        double maxDiff = 0.0;
+        for (int i = 0; i < x.size(); i++) {
+            double diff = std::abs(x(i) - 1.0);
+            maxDiff = std::max(maxDiff, diff);
+        }
+        
+        bool isGood = maxDiff < epsilon;
+        
+        if (isGood) std::cout << "check PASSED." << std::endl;
+        else std::cout << "check FAILED." << std::endl;
+        
+        return isGood;
+    }
 
 std::chrono::microseconds Calculate(){
 
     std::chrono::microseconds duration;
 
-    int N = 10000;
+    int N = 5000;
 
     if(RANK == 0){
         Matrix A(N,N);
         Vector b(N);
         A.fill();
         b.fill();
-        
+
         auto start = std::chrono::high_resolution_clock::now();
 
         Matrix localA = A.split(0,SIZE);
@@ -351,51 +376,60 @@ std::chrono::microseconds Calculate(){
         {
             Matrix local = A.split(i,SIZE);
             int localSize = local.sizeY();
-            MPI_Send(&localSize,1,MPI_INT,i,0,MPI_COMM_WORLD);
-            MPI_Send(local.data(),N*localSize,MPI_DOUBLE,i,1,MPI_COMM_WORLD);
-            MPI_Send(b.split(i,SIZE).data(),localSize,MPI_DOUBLE,i,2,MPI_COMM_WORLD);
+            MPI_Send(&localSize, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
+            MPI_Send(local.data(), N*localSize, MPI_DOUBLE, i, 1, MPI_COMM_WORLD);
+            MPI_Send(b.split(i,SIZE).data(), localSize, MPI_DOUBLE, i, 2, MPI_COMM_WORLD);
         }
 
-        Vector x = SimpleIterator::solve(localA,localB);
+        std::cout<<"there 2, from " <<RANK<<std::endl;
+
+        Vector x = SimpleIterator::solve(localA, localB);
+
+        checkRes(x);
 
         auto end = std::chrono::high_resolution_clock::now();
         duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-        
+
     }
     else{
         int localSize;
-        MPI_Recv(&localSize,1,MPI_INT,0,0,MPI_COMM_WORLD,MPI_STATUS_IGNORE);
-        
-        Matrix localA(N,localSize);
-        MPI_Recv(localA.data(),N*localSize,MPI_DOUBLE,0,1,MPI_COMM_WORLD,MPI_STATUS_IGNORE);
+        MPI_Recv(&localSize, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    
+        Matrix localA(N, localSize);
+        MPI_Recv(localA.data(), N*localSize, MPI_DOUBLE, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
         Vector localB(localSize);
-        MPI_Recv(localB.data(),localSize,MPI_DOUBLE,0,2,MPI_COMM_WORLD,MPI_STATUS_IGNORE);
+        MPI_Recv(localB.data(), localSize, MPI_DOUBLE, 0, 2, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-        SimpleIterator::solve(localA,localB);
+        std::cout<<"there 3, from " <<RANK<<std::endl;
+
+        SimpleIterator::solve(localA, localB);
     }
-
     return duration;
 }
 
-
 int main(int argc, char** argv) {
+    std::cout<<"there 0, from " <<RANK<<std::endl;
     MPI_Init(&argc, &argv);
     MPI_Comm_size(MPI_COMM_WORLD, &SIZE);
     MPI_Comm_rank(MPI_COMM_WORLD, &RANK);
 
+    std::cout<<"there 1, from " <<RANK<<std::endl;
+
     std::chrono::microseconds min = std::chrono::microseconds::max();
-    for(int i=0; i < 10; i++){
-        auto duration = Calculate();
-        if(min > duration) min = duration;
+    for(int i=0; i < 5; i++){
+        try{
+            auto duration = Calculate();
+            if(min > duration) min = duration;
+        }
+        catch(std::exception& e){
+            std::cout<<e.what();
+            return 0;
+        }
+        MPI_Barrier(MPI_COMM_WORLD);
     }
     
     if(RANK == 0){
-        std::ofstream file("V1_test.csv", std::ios::app | std::ios::out);
-        if (file.is_open()) {
-            file << std::to_string(SIZE) << "," << (min.count()*0.001) << std::endl;
-            file.close();
-        } 
-        else std::cerr << "Не удалось открыть файл" << std::endl;
+        std::cout << (min.count()*0.000001) << std::endl;
     }
 
     MPI_Finalize();
