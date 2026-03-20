@@ -255,13 +255,11 @@ public:
 
 class RingIterator {
 private:
-    static void ringMatMult(const Matrix& A, const Vector& x_local, Vector& result, int N, const int* sizes, const int* offsets, int maxLocalSize) {
-        int rank = RANK;
-        int size = SIZE;
-        int localSize = A.sizeY();
+    static double* current_x;
+    static double* temp_x;
 
-        double* current_x = new double[maxLocalSize];
-        double* temp_x    = new double[maxLocalSize];
+    static void ringMatMult(const Matrix& A, const Vector& x_local, Vector& result, const int* const sizes, const int* const offsets, int maxLocalSize) {
+        int localSize = A.sizeY();
 
         for (int i = 0; i < localSize; i++) {
             current_x[i] = x_local(i);
@@ -274,23 +272,22 @@ private:
             result(i) = 0.0;
         }
 
-        int myStart = offsets[rank];
         for (int i = 0; i < localSize; i++) {
             double sum = 0.0;
             for (int j = 0; j < localSize; j++) {
-                int globalCol = myStart + j;
-                sum += A.data()[i * N + globalCol] * x_local(j);
+                int globalCol = offsets[RANK] + j;
+                sum += A.data()[i * A.sizeX() + globalCol] * x_local(j);
             }
             result(i) += sum;
         }
 
-        for (int step = 1; step < size; step++) {
-            int dest = (rank + 1) % size;
-            int src  = (rank - 1 + size) % size;
+        for (int step = 1; step < SIZE; step++) {
+            int dest = (RANK + 1) % SIZE;
+            int src  = (RANK - 1 + SIZE) % SIZE;
 
             MPI_Sendrecv(current_x, maxLocalSize, MPI_DOUBLE, dest, 0, temp_x, maxLocalSize, MPI_DOUBLE, src,  0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-            int srcRank = (rank - step + size) % size;
+            int srcRank = (RANK - step + SIZE) % SIZE;
             int srcCount = sizes[srcRank];
             int srcStart = offsets[srcRank];
 
@@ -298,27 +295,23 @@ private:
                 double sum = 0.0;
                 for (int j = 0; j < srcCount; j++) {
                     int globalCol = srcStart + j;
-                    sum += A.data()[i * N + globalCol] * temp_x[j];
+                    sum += A.data()[i * A.sizeX() + globalCol] * temp_x[j];
                 }
                 result(i) += sum;
             }
 
             std::copy(temp_x, temp_x + maxLocalSize, current_x);
         }
-
-        delete[] current_x;
-        delete[] temp_x;
     }
     
 public:
     static Vector solve(const Matrix& A, const Vector& b) {
-        const double epsilon = 0.00001;
-        double tau = 1.9 / (A.sizeX() + 1);
+        const double epsilon = 1e-100;
+        double tau = 1.5 / (A.sizeX() + 1);
 
         int N = A.sizeX();
         int localSize = A.sizeY();
 
-        // Собираем информацию о распределении данных
         int* sizes = new int[SIZE];
         MPI_Allgather(&localSize, 1, MPI_INT, sizes, 1, MPI_INT, MPI_COMM_WORLD);
 
@@ -332,6 +325,9 @@ public:
         for (int i = 0; i < SIZE; i++) {
             if (sizes[i] > maxLocalSize) maxLocalSize = sizes[i];
         }
+
+        current_x = new double[maxLocalSize];
+        temp_x    = new double[maxLocalSize];
 
         double bNorm;
         {
@@ -351,7 +347,7 @@ public:
         bool isLess = false;
 
         while (!isLess) {
-            ringMatMult(A, x_local, localAx, N, sizes, offsets, maxLocalSize);
+            ringMatMult(A, x_local, localAx, sizes, offsets, maxLocalSize);
 
             for (int i = 0; i < localSize; i++) {
                 localRes(i) = localAx(i) - b(i);
@@ -375,16 +371,19 @@ public:
         }
 
         Vector x_global(N);
-        MPI_Allgatherv(x_local.data(), localSize, MPI_DOUBLE,
-                       x_global.data(), sizes, offsets, MPI_DOUBLE,
-                       MPI_COMM_WORLD);
+        MPI_Allgatherv(x_local.data(), localSize, MPI_DOUBLE, x_global.data(), sizes, offsets, MPI_DOUBLE, MPI_COMM_WORLD);
 
         delete[] sizes;
         delete[] offsets;
+        delete[] current_x;
+        delete[] temp_x;
         return x_global;
     }
 
 };
+
+double* RingIterator::current_x = nullptr;
+double* RingIterator::temp_x = nullptr;
 
 bool checkRes(const Vector& x, double epsilon = 1e-5) {
     if (RANK != 0) return true;
@@ -401,7 +400,7 @@ bool checkRes(const Vector& x, double epsilon = 1e-5) {
 
 std::chrono::microseconds Calculate() {
     std::chrono::microseconds duration;
-    int N = 5000;
+    int N = 15000;
 
     if (RANK == 0) {
         Matrix A(N, N);

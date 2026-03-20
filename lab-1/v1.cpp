@@ -270,16 +270,14 @@ public:
 class SimpleIterator{
 public:
     static Vector solve(const Matrix& A, const Vector& b) {
-        const double epsilon = 0.00001;
-        double tau = 1.9/(A.sizeX()+1);
+        const double epsilon = 1e-100;
+        double tau = 1.5/(A.sizeX()+1);
 
         int N = A.sizeX();
         int localSize = A.sizeY();
 
         int *sizes = new int[SIZE];
         MPI_Allgather(&localSize, 1, MPI_INT, sizes, 1, MPI_INT, MPI_COMM_WORLD);
-
-        std::cout<<"there 4, from " <<RANK<<std::endl;
 
         int *offsets = new int[SIZE];
         offsets[0] = 0;
@@ -297,8 +295,7 @@ public:
             bNorm = 1 / std::sqrt(globalSqrBNorm);
         }
 
-        std::cout<<"there 5, from " <<RANK<<std::endl;
-        
+
         Vector x_global(N);
         Vector x_local(localSize);
         Vector localRes(localSize);
@@ -306,7 +303,6 @@ public:
         bool isLess = false;
         while (!isLess) {
             MPI_Allgatherv(x_local.data(), localSize, MPI_DOUBLE, x_global.data(), sizes, offsets, MPI_DOUBLE, MPI_COMM_WORLD);
-            std::cout<<"there 6, from " <<RANK<<std::endl;
             A.multiply(x_global,localRes);
             localRes -= b;
 
@@ -322,7 +318,6 @@ public:
                 globalNorm = std::sqrt(globalSqrNorm) * bNorm;
             }  
             
-            std::cout<<"there 7, from " <<RANK<<std::endl;
             localRes*=tau;
             x_local -= localRes;
             
@@ -330,7 +325,6 @@ public:
         }
 
         MPI_Allgatherv(x_local.data(), localSize, MPI_DOUBLE, x_global.data(), sizes, offsets, MPI_DOUBLE, MPI_COMM_WORLD);
-        std::cout<<"there 8, from " <<RANK<<std::endl;
         delete[] sizes;
         delete[] offsets;
         return x_global;
@@ -359,7 +353,7 @@ std::chrono::microseconds Calculate(){
 
     std::chrono::microseconds duration;
 
-    int N = 5000;
+    int N = 15000;
 
     if(RANK == 0){
         Matrix A(N,N);
@@ -381,8 +375,6 @@ std::chrono::microseconds Calculate(){
             MPI_Send(b.split(i,SIZE).data(), localSize, MPI_DOUBLE, i, 2, MPI_COMM_WORLD);
         }
 
-        std::cout<<"there 2, from " <<RANK<<std::endl;
-
         Vector x = SimpleIterator::solve(localA, localB);
 
         checkRes(x);
@@ -400,20 +392,15 @@ std::chrono::microseconds Calculate(){
         Vector localB(localSize);
         MPI_Recv(localB.data(), localSize, MPI_DOUBLE, 0, 2, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-        std::cout<<"there 3, from " <<RANK<<std::endl;
-
         SimpleIterator::solve(localA, localB);
     }
     return duration;
 }
 
 int main(int argc, char** argv) {
-    std::cout<<"there 0, from " <<RANK<<std::endl;
     MPI_Init(&argc, &argv);
     MPI_Comm_size(MPI_COMM_WORLD, &SIZE);
     MPI_Comm_rank(MPI_COMM_WORLD, &RANK);
-
-    std::cout<<"there 1, from " <<RANK<<std::endl;
 
     std::chrono::microseconds min = std::chrono::microseconds::max();
     for(int i=0; i < 5; i++){
