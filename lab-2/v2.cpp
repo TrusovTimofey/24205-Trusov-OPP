@@ -35,7 +35,6 @@ public:
     }
 
     void fill(){
-        #pragma omp parallel for schedule(static)
         for(int i = 0; i < _size; i++){
             _values[i] = _size+1;
         }
@@ -60,20 +59,16 @@ public:
         if(_values == nullptr) throw std::runtime_error("Use after free");
         if(other._values == nullptr) throw std::invalid_argument("Vector is empty");
         if(other._size != _size) throw std::invalid_argument("Vectors must have the same size");
-        
-        #pragma omp parallel for schedule(static)
         for(int i = 0; i < _size; i++){
-            _values[i] -= other._values[i];
+            _values[i]-= other._values[i];
         }
         return *this;
     }
 
     Vector& operator*= (double value){
         if(_values == nullptr) throw std::runtime_error("Use after free");
-        
-        #pragma omp parallel for schedule(static)
         for(int i = 0; i < _size; i++){
-            _values[i] *= value;
+            _values[i]*= value;
         }
         return *this;
     }
@@ -92,10 +87,8 @@ public:
     double norm() const{
         if(_values == nullptr) throw std::runtime_error("Use after free");
         double value = 0;
-        
-        #pragma omp parallel for reduction(+:value) schedule(static)
         for(int i = 0; i < _size; i++){
-            value += _values[i] * _values[i];
+            value+= _values[i] * _values[i];
         }
         return std::sqrt(value);
     }
@@ -145,7 +138,6 @@ public:
     }
 
     void fill(){
-        #pragma omp parallel for collapse(2) schedule(static)
         for(int y = 0; y < _sizeY; y++){
             for(int x = 0; x < _sizeX; x++){
                 get(x,y) = x==y ? 2 : 1;
@@ -158,6 +150,12 @@ public:
     }
     int sizeY() const{
         return _sizeY;
+    }
+
+    double operator() (int x, int y) const{
+        if(_values == nullptr) throw std::runtime_error("Use after free");
+        if(x < 0 || y < 0 || x >= _sizeX || y >= _sizeY ) throw std::invalid_argument("Index out of range");
+        return get(x,y);
     }
 
     double& operator() (int x, int y){
@@ -182,7 +180,6 @@ public:
         if(vec.size() != _sizeX) throw std::invalid_argument("Vector size must be equal to matrix x size");
         if(result.size() != _sizeY) throw std::invalid_argument("Result vector size must be equal to matrix y size");
 
-        #pragma omp parallel for schedule(dynamic)
         for(int y = 0; y < _sizeY; y++){
             double sum = 0.0;
             for(int x = 0; x < _sizeX; x++){
@@ -218,20 +215,49 @@ public:
         Vector x(N);
         Vector residual(N);
         
-        bool isLess = false;     
+        bool isLess = false;
+        int iteration = 0;
+        
         while (!isLess) {
-            A.multiply(x, residual);
-            residual -= b;
+            double localNorm = 0.0;
+            #pragma omp parallel
+            {
 
-            double globalNorm = residual.norm() * bNorm;
-            
-            Vector temp = residual;
-            temp *= tau;
-            x -= temp;
-            
-            isLess = globalNorm < epsilon;
+                #pragma omp for schedule(dynamic) nowait
+                for(int y = 0; y < A.sizeY(); y++){
+                    double sum = 0.0;
+                    for(int xi = 0; xi < A.sizeX(); xi++){
+                        sum += A(xi,y) * x(xi);
+                    }
+                    residual(y) = sum;
+                }
+                
+                #pragma omp barrier
+                #pragma omp for schedule(static)
+                for(int i = 0; i < N; i++){
+                    residual(i) -= b(i);
+                }
+                
+                #pragma omp barrier
+                #pragma omp for reduction(+:localNorm) schedule(static)
+                for(int i = 0; i < N; i++){
+                    localNorm += residual(i) * residual(i);
+                }
+                
+                #pragma omp single
+                {
+                    double globalNorm = std::sqrt(localNorm) * bNorm;
+                    isLess = globalNorm < epsilon;
+                }
+                
+                #pragma omp barrier
+                #pragma omp for schedule(static)
+                for(int i = 0; i < N; i++){
+                    x(i) -= tau * residual(i);
+                }
+            }
         }
-
+        
         return x;
     }
 };
@@ -252,7 +278,7 @@ bool checkRes(const Vector& x, double epsilon = 1e-5) {
 }
 
 int main(int argc, char** argv) {
-    int N = 30000;
+    int N = 15000;
     
     int num_threads = 12;
     if (argc > 1) {
@@ -263,12 +289,12 @@ int main(int argc, char** argv) {
     std::cout << "threads: " << omp_get_max_threads() << std::endl;
     Matrix A(N, N);
     Vector b(N);
-    
+
     A.fill();
     b.fill();
-
+    
     std::chrono::microseconds duration = std::chrono::microseconds::max();
-    for(int i = 0; i < 10; i++){
+    for(int i = 0; i < 1; i++){
 
         auto start = std::chrono::high_resolution_clock::now();
         

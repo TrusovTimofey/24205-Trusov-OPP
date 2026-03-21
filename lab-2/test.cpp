@@ -3,8 +3,10 @@
 #include <cstring>
 #include <cmath>
 #include <chrono>
+#include <vector>
 #include <algorithm>
 #include <omp.h>
+#include <random>
 
 class Vector{
 private:
@@ -19,11 +21,6 @@ public:
     Vector(const Vector& other) : _size(other._size), _values(new double[other._size]) {
         std::memcpy(_values, other._values, sizeof(double) * _size);
     }
-    Vector(int size, double* data): _size(size){
-        if(size <= 0) throw std::invalid_argument("Index must be a positive integer");
-        _values = new double[size]();
-        std::memcpy(_values, data, sizeof(double) * _size);
-    }
     ~Vector(){
         if(_values == nullptr) return;
         delete[] _values;
@@ -35,9 +32,13 @@ public:
     }
 
     void fill(){
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_real_distribution<double> dis(0.0, 1.0);
+
         #pragma omp parallel for schedule(static)
         for(int i = 0; i < _size; i++){
-            _values[i] = _size+1;
+            _values[i] = dis(gen);
         }
     }
 
@@ -61,7 +62,7 @@ public:
         if(other._values == nullptr) throw std::invalid_argument("Vector is empty");
         if(other._size != _size) throw std::invalid_argument("Vectors must have the same size");
         
-        #pragma omp parallel for schedule(static)
+        #pragma omp parallel for schedule(runtime)
         for(int i = 0; i < _size; i++){
             _values[i] -= other._values[i];
         }
@@ -71,7 +72,7 @@ public:
     Vector& operator*= (double value){
         if(_values == nullptr) throw std::runtime_error("Use after free");
         
-        #pragma omp parallel for schedule(static)
+        #pragma omp parallel for schedule(runtime)
         for(int i = 0; i < _size; i++){
             _values[i] *= value;
         }
@@ -93,21 +94,11 @@ public:
         if(_values == nullptr) throw std::runtime_error("Use after free");
         double value = 0;
         
-        #pragma omp parallel for reduction(+:value) schedule(static)
+        #pragma omp parallel for reduction(+:value) schedule(runtime)
         for(int i = 0; i < _size; i++){
             value += _values[i] * _values[i];
         }
         return std::sqrt(value);
-    }
-
-    std::string toString() const{
-        if(_values == nullptr) throw std::runtime_error("Use after free");
-        std::string str = "(";
-        for(int i = 0; i < _size; i++){
-            str+=std::to_string(_values[i]) + ", ";
-        }
-        str+=")\n";
-        return str;
     }
 };
 
@@ -140,15 +131,16 @@ public:
         std::memcpy(_values, other._values, sizeof(double) * _sizeX* _sizeY);
     }
 
-    double* data(){
-        return _values;
-    }
-
     void fill(){
+
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_real_distribution<double> dis(0.0, 1.0);
+
         #pragma omp parallel for collapse(2) schedule(static)
         for(int y = 0; y < _sizeY; y++){
             for(int x = 0; x < _sizeX; x++){
-                get(x,y) = x==y ? 2 : 1;
+                get(x,y) = dis(gen);
             }
         }
     }
@@ -182,7 +174,7 @@ public:
         if(vec.size() != _sizeX) throw std::invalid_argument("Vector size must be equal to matrix x size");
         if(result.size() != _sizeY) throw std::invalid_argument("Result vector size must be equal to matrix y size");
 
-        #pragma omp parallel for schedule(dynamic)
+        #pragma omp parallel for schedule(runtime)
         for(int y = 0; y < _sizeY; y++){
             double sum = 0.0;
             for(int x = 0; x < _sizeX; x++){
@@ -192,67 +184,10 @@ public:
         }
     }
 
-    std::string toString() const{
-        if(_values == nullptr) throw std::runtime_error("Use after free");
-        std::string str;
-        for(int y = 0; y < _sizeY; y++){
-            str+="| ";
-            for(int x = 0; x < _sizeX; x++){
-                str+=std::to_string(get(x,y)) + ", ";
-            }
-            str+="|\n";
-        }
-        return str;
-    }
 };
-
-class SimpleIterator{
-public:
-    static Vector solve(const Matrix& A, const Vector& b) {
-        const double epsilon = 1e-100;
-        double tau = 1.5/(A.sizeX()+1);
-        
-        int N = A.sizeX();
-        double bNorm = 1.0 / b.norm();
-        
-        Vector x(N);
-        Vector residual(N);
-        
-        bool isLess = false;     
-        while (!isLess) {
-            A.multiply(x, residual);
-            residual -= b;
-
-            double globalNorm = residual.norm() * bNorm;
-            
-            Vector temp = residual;
-            temp *= tau;
-            x -= temp;
-            
-            isLess = globalNorm < epsilon;
-        }
-
-        return x;
-    }
-};
-
-bool checkRes(const Vector& x, double epsilon = 1e-5) {
-    double maxDiff = 0.0;
-    for (int i = 0; i < x.size(); i++) {
-        double diff = std::abs(x(i) - 1.0);
-        maxDiff = std::max(maxDiff, diff);
-    }
-
-    bool isGood = maxDiff < epsilon;
-
-    if (isGood) std::cout << "check PASSED." << std::endl;
-    else std::cout << "check FAILED. Max diff: " << maxDiff << std::endl;
-
-    return isGood;
-}
 
 int main(int argc, char** argv) {
-    int N = 30000;
+    int N = 20000;
     
     int num_threads = 12;
     if (argc > 1) {
@@ -261,26 +196,99 @@ int main(int argc, char** argv) {
     omp_set_num_threads(num_threads);
     
     std::cout << "threads: " << omp_get_max_threads() << std::endl;
-    Matrix A(N, N);
-    Vector b(N);
+
+    struct ScheduleType {
+        std::string name;
+        omp_sched_t type;
+        int chunk;
+    };
     
-    A.fill();
-    b.fill();
+    std::vector<ScheduleType> schedules = {
+        {"static,chunk=0", omp_sched_static, 0},
+        {"static,chunk=1", omp_sched_static, 1},
+        {"static,chunk=10", omp_sched_static, 10},
+        {"static,chunk=100", omp_sched_static, 100},
+        {"static,chunk=1000", omp_sched_static, 1000},
+        {"dynamic,chunk=0", omp_sched_dynamic, 0},
+        {"dynamic,chunk=1", omp_sched_dynamic, 1},
+        {"dynamic,chunk=10", omp_sched_dynamic, 10},
+        {"dynamic,chunk=100", omp_sched_dynamic, 100},
+        {"dynamic,chunk=1000", omp_sched_dynamic, 1000},
+        {"guided,chunk=0", omp_sched_guided, 0},
+        {"guided,chunk=1", omp_sched_guided, 1},
+        {"guided,chunk=10", omp_sched_guided, 10},
+        {"guided,chunk=100", omp_sched_guided, 100},
+        {"guided,chunk=100", omp_sched_guided, 100},
+        {"auto", omp_sched_auto, 0}
+    };
 
-    std::chrono::microseconds duration = std::chrono::microseconds::max();
-    for(int i = 0; i < 10; i++){
+    for (const auto& sched : schedules) {
+        omp_set_schedule(sched.type, sched.chunk);
 
-        auto start = std::chrono::high_resolution_clock::now();
+        std::cout << sched.name << ": \n";
+
+        Matrix A(N, N);
+        Vector b(N);
+        Vector temp(N);
+    
+        A.fill();
+        b.fill();
+        temp.fill();
+
+        std::chrono::microseconds duration = std::chrono::microseconds::max();
+        for(int i = 0; i < 100; i++){
+
+            auto start = std::chrono::high_resolution_clock::now();
         
-        Vector x = SimpleIterator::solve(A, b);
+            temp-=b;
             
-        auto end = std::chrono::high_resolution_clock::now();
-        auto local = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-        duration = duration > local ? local : duration;
-        checkRes(x);
-    }
+            auto end = std::chrono::high_resolution_clock::now();
+            auto local = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+            duration = duration > local ? local : duration;
+        }
+        std::cout << "operator-= time: " << (duration.count() ) << " ms" << std::endl;
+
+        duration = std::chrono::microseconds::max();
+        for(int i = 0; i < 100; i++){
+
+            auto start = std::chrono::high_resolution_clock::now();
         
-    std::cout << "Time: " << (duration.count() * 0.000001) << " seconds" << std::endl;
+            temp*=-1;
+            
+            auto end = std::chrono::high_resolution_clock::now();
+            auto local = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+            duration = duration > local ? local : duration;
+        }
+        std::cout << "operator*= time: " << (duration.count() ) << " ms" << std::endl;
+
+        duration = std::chrono::microseconds::max();
+        for(int i = 0; i < 100; i++){
+
+            auto start = std::chrono::high_resolution_clock::now();
+        
+            temp.norm();
+            
+            auto end = std::chrono::high_resolution_clock::now();
+            auto local = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+            duration = duration > local ? local : duration;
+        }
+        std::cout << "norm time: " << (duration.count() ) << " ms" << std::endl;
+
+        duration = std::chrono::microseconds::max();
+        for(int i = 0; i < 100; i++){
+
+            auto start = std::chrono::high_resolution_clock::now();
+        
+            A.multiply(b,temp);
+            
+            auto end = std::chrono::high_resolution_clock::now();
+            auto local = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+            duration = duration > local ? local : duration;
+        }
+        std::cout << "multiply time: " << (duration.count() ) << " ms" << std::endl;
+
+        std::cout << std::endl;
+    }
 
     return 0;
 }
