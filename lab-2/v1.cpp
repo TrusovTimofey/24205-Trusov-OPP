@@ -97,6 +97,15 @@ public:
         for(int i = 0; i < _size; i++){
             value += _values[i] * _values[i];
         }
+
+        /*
+        #pragma omp parallel for reduction(+:value) schedule(static)
+        for(int i = 0; i < _size; i++){
+            double temp = _values[i] * _values[i];
+            #pragma omp atomic //#pragma omp critical
+            value += temp;
+        }
+        */
         return std::sqrt(value);
     }
 

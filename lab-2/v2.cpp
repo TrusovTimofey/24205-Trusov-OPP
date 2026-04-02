@@ -223,7 +223,7 @@ public:
             #pragma omp parallel
             {
 
-                #pragma omp for schedule(dynamic) nowait
+                #pragma omp for schedule(dynamic)
                 for(int y = 0; y < A.sizeY(); y++){
                     double sum = 0.0;
                     for(int xi = 0; xi < A.sizeX(); xi++){
@@ -232,13 +232,11 @@ public:
                     residual(y) = sum;
                 }
                 
-                #pragma omp barrier
                 #pragma omp for schedule(static)
                 for(int i = 0; i < N; i++){
                     residual(i) -= b(i);
                 }
                 
-                #pragma omp barrier
                 #pragma omp for reduction(+:localNorm) schedule(static)
                 for(int i = 0; i < N; i++){
                     localNorm += residual(i) * residual(i);
@@ -250,7 +248,6 @@ public:
                     isLess = globalNorm < epsilon;
                 }
                 
-                #pragma omp barrier
                 #pragma omp for schedule(static)
                 for(int i = 0; i < N; i++){
                     x(i) -= tau * residual(i);
