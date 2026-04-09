@@ -53,7 +53,7 @@ public:
 
     Matrix& operator=(Matrix&& other) noexcept {
         if (this != &other) {
-            if (_values && _allocated)delete[] _values;
+            if (_values && _allocated) delete[] _values;
             _width = other._width;
             _height = other._height;
             _values = other._values;
@@ -98,9 +98,9 @@ public:
     }
 
     void insertBlock(const Matrix& other, int posX, int posY) {
-        for(int y = 0; y < other._height; y++){
-            for(int x = 0; x < other._width; x++){
-                get(posX+x,posY+y) = other.get(x,y);
+        for (int y = 0; y < other._height; y++) {
+            for (int x = 0; x < other._width; x++) {
+                get(posX + x, posY + y) = other.get(x, y);
             }
         }
     }
@@ -159,8 +159,12 @@ int main(int argc, char** argv) {
     Matrix* bSplited = nullptr;
 
     Matrix* C = nullptr;
-    int* offsets = nullptr;
     int* recvCount = nullptr;
+    int* offsets = nullptr;
+    int* blockW = nullptr;
+    int* blockH = nullptr;
+    int* offsetX = nullptr;
+    int* offsetY = nullptr;
 
     if (coords[0] == 0 && coords[1] == 0) {
         Matrix A(2, 3);
@@ -173,47 +177,56 @@ int main(int argc, char** argv) {
         B(0,0)=1; B(1,0)=0; B(2,0)=1; 
         B(0,1)=0; B(1,1)=1; B(2,1)=-1;
         
-        C = new Matrix(3,3);
-        offsets = new int[rows*cols];
-        recvCount = new int[rows*cols];
-        
-        aSplited = A.splitHorizontal(0, rows);
-        for(int x = 0; x < cols; x++){
-            recvCount[x] = aSplited->height();
-        }
-        for (int y = 1; y < rows; y++) {
+        C = new Matrix(B.width(), A.height());
+
+        blockW = new int[cols];
+        blockH = new int[rows];
+        offsetX = new int[cols + 1];
+        offsetY = new int[rows + 1];
+
+        offsetY[0] = 0;
+        for (int y = 0; y < rows; y++) {
             Matrix* part = A.splitHorizontal(y, rows);
-            int sizes[2] = {part->width(), part->height()};
+            blockH[y] = part->height();
+            offsetY[y + 1] = offsetY[y] + blockH[y];
 
-            for(int x = 0; x < cols; x++){
-                recvCount[x+y*cols] = sizes[1];
+            if (y == 0) {
+                aSplited = part;
+            } else {
+                int sizes[2] = {part->width(), part->height()};
+                MPI_Send(sizes, 2, MPI_INT, y, 0, col_comm);
+                MPI_Send(part->data(), part->width() * part->height(), MPI_DOUBLE, y, 1, col_comm);
+                delete part;
             }
+        }
 
-            MPI_Send(sizes, 2, MPI_INT, y, 0, col_comm);
-            MPI_Send(part->data(), part->width() * part->height(), MPI_DOUBLE, y, 1, col_comm);
-            delete part;
-        }
-        
-        bSplited = B.splitVertical(0, cols);
-        for (int y = 1; y < rows; y++) {
-            recvCount[y*cols]*= bSplited->width();
-        }
-        for (int x = 1; x < cols; x++) {
+        offsetX[0] = 0;
+        for (int x = 0; x < cols; x++) {
             Matrix* part = B.splitVertical(x, cols);
-            int sizes[2] = {part->width(), part->height()};
+            blockW[x] = part->width();
+            offsetX[x + 1] = offsetX[x] + blockW[x];
 
-            for (int y = 0; y < rows; y++) {
-                recvCount[x + y*cols]*= bSplited->width();
+            if (x == 0) {
+                bSplited = part;
+            } else {
+                int sizes[2] = {part->width(), part->height()};
+                MPI_Send(sizes, 2, MPI_INT, x, 2, row_comm);
+                MPI_Send(part->data(), part->width() * part->height(), MPI_DOUBLE, x, 3, row_comm);
+                delete part;
             }
-            
-            MPI_Send(sizes, 2, MPI_INT, x, 2, row_comm);
-            MPI_Send(part->data(), part->width() * part->height(), MPI_DOUBLE, x, 3, row_comm);
-            delete part;
         }
 
-        offsets[0]=0;
-        for(int i = 1; i < rows*cols; i++){
-            offsets[i]=recvCount[i-1]+offsets[i-1];
+        recvCount = new int[rows * cols];
+        offsets = new int[rows * cols];
+        for (int y = 0; y < rows; y++) {
+            for (int x = 0; x < cols; x++) {
+                int idx = y * cols + x;
+                recvCount[idx] = blockW[x] * blockH[y];
+            }
+        }
+        offsets[0] = 0;
+        for (int i = 1; i < rows * cols; i++) {
+            offsets[i] = offsets[i - 1] + recvCount[i - 1];
         }
 
     } else {
@@ -258,28 +271,30 @@ int main(int argc, char** argv) {
     }
     MPI_Bcast(bSplited->data(), sizes[0] * sizes[1], MPI_DOUBLE, 0, col_comm);
 
-
     Matrix cSplited = Matrix::multiply(*aSplited, *bSplited);
 
     delete aSplited;
     delete bSplited;
 
-    int rootCoord[2] = {0,0};
+    int rootCoord[2] = {0, 0};
     int rootRank;
     MPI_Cart_rank(cart_comm, rootCoord, &rootRank);
 
     double* recvBuffer = nullptr;
-    if(coords[1] == 0 && coords[0] == 0) {
-        recvBuffer = new double[C->width()*C->height()];
+    if (coords[0] == 0 && coords[1] == 0) {
+        recvBuffer = new double[C->width() * C->height()];
     }
 
-    MPI_Gatherv(cSplited.data(), cSplited.width()*cSplited.height(), MPI_DOUBLE, recvBuffer, recvCount, offsets, MPI_DOUBLE, rootRank, cart_comm);
+    MPI_Gatherv(cSplited.data(), cSplited.width() * cSplited.height(), MPI_DOUBLE, recvBuffer, recvCount, offsets, MPI_DOUBLE, rootRank, cart_comm);
 
-    if(coords[1] == 0 && coords[0] == 0) {
+    if (coords[0] == 0 && coords[1] == 0) {
+        for (int y = 0; y < rows; y++) {
+            for (int x = 0; x < cols; x++) {
+                int idx = y * cols + x;
 
-        for(int y = 0; y < rows; y++){
-            for(int x = 0; x < cols; x++){
-                //C->insertBlock(Matrix(,,&recvBuffer[]),x,y);
+                Matrix subBlock(blockW[x], blockH[y], recvBuffer + offsets[idx]);
+
+                C->insertBlock(subBlock, offsetX[x], offsetY[y]);
             }
         }
 
@@ -288,6 +303,10 @@ int main(int argc, char** argv) {
         delete[] recvBuffer;
         delete[] offsets;
         delete[] recvCount;
+        delete[] blockW;
+        delete[] blockH;
+        delete[] offsetX;
+        delete[] offsetY;
         delete C;
     }
 
