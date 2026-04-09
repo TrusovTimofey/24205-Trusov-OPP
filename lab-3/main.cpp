@@ -6,10 +6,11 @@
 #include <chrono>
 
 class Matrix {
-private:
+protected:
     int _width;
     int _height;
     double* _values = nullptr;
+    bool _allocated = true;
 
     double& get(int x, int y) { return _values[y * _width + x]; }
     const double& get(int x, int y) const { return _values[y * _width + x]; }
@@ -19,11 +20,49 @@ public:
         _values = new double[width * height]();
     }
 
-    Matrix(int width, int height, double* data) : _width(width), _height(height), _values(data) {}
+    Matrix(int width, int height, double* data) : _width(width), _height(height), _values(data) {
+        _allocated = false;
+    }
 
     ~Matrix() {
-        if (_values) delete[] _values;
+        if (_values && _allocated) delete[] _values;
         _values = nullptr;
+    }
+
+    Matrix(const Matrix& other) : _width(other._width), _height(other._height) {
+        _values = new double[_width * _height];
+        std::memcpy(_values, other._values, sizeof(double) * _width * _height);
+    }
+
+    Matrix& operator=(const Matrix& other) {
+        if (this != &other) {
+            if (_values && _allocated) delete[] _values;
+            _width = other._width;
+            _height = other._height;
+            _values = new double[_width * _height];
+            std::memcpy(_values, other._values, sizeof(double) * _width * _height);
+        }
+        return *this;
+    }
+
+    Matrix(Matrix&& other) noexcept : _width(other._width), _height(other._height), _values(other._values) {
+        other._values = nullptr;
+        other._width = 0;
+        other._height = 0;
+    }
+
+    Matrix& operator=(Matrix&& other) noexcept {
+        if (this != &other) {
+            if (_values && _allocated)delete[] _values;
+            _width = other._width;
+            _height = other._height;
+            _values = other._values;
+            _allocated = other._allocated;
+            other._values = nullptr;
+            other._width = 0;
+            other._height = 0;
+        }
+        return *this;
     }
 
     double* data() { return _values; }
@@ -56,6 +95,14 @@ public:
         Matrix* mat = new Matrix(_width, partSize);
         std::memcpy(mat->_values, &(get(0, offset)), sizeof(double) * _width * partSize);
         return mat;
+    }
+
+    void insertBlock(const Matrix& other, int posX, int posY) {
+        for(int y = 0; y < other._height; y++){
+            for(int x = 0; x < other._width; x++){
+                get(posX+x,posY+y) = other.get(x,y);
+            }
+        }
     }
 
     static Matrix multiply(const Matrix& a, const Matrix& b) {
@@ -155,7 +202,7 @@ int main(int argc, char** argv) {
             Matrix* part = B.splitVertical(x, cols);
             int sizes[2] = {part->width(), part->height()};
 
-            for (int y = 1; y < rows; y++) {
+            for (int y = 0; y < rows; y++) {
                 recvCount[x + y*cols]*= bSplited->width();
             }
             
@@ -164,9 +211,9 @@ int main(int argc, char** argv) {
             delete part;
         }
 
-        offsets[0]=recvCount[0];
+        offsets[0]=0;
         for(int i = 1; i < rows*cols; i++){
-            offsets[i]=recvCount[i]+offsets[i-1];
+            offsets[i]=recvCount[i-1]+offsets[i-1];
         }
 
     } else {
@@ -221,14 +268,27 @@ int main(int argc, char** argv) {
     int rootRank;
     MPI_Cart_rank(cart_comm, rootCoord, &rootRank);
 
-    MPI_Gatherv(cSplited.data(), cSplited.width()*cSplited.height(), MPI_DOUBLE, C->data(), recvCount, offsets, MPI_DOUBLE, rootRank, cart_comm);
+    double* recvBuffer = nullptr;
+    if(coords[1] == 0 && coords[0] == 0) {
+        recvBuffer = new double[C->width()*C->height()];
+    }
+
+    MPI_Gatherv(cSplited.data(), cSplited.width()*cSplited.height(), MPI_DOUBLE, recvBuffer, recvCount, offsets, MPI_DOUBLE, rootRank, cart_comm);
 
     if(coords[1] == 0 && coords[0] == 0) {
+
+        for(int y = 0; y < rows; y++){
+            for(int x = 0; x < cols; x++){
+                //C->insertBlock(Matrix(,,&recvBuffer[]),x,y);
+            }
+        }
+
         std::cout << C->toString();
 
+        delete[] recvBuffer;
         delete[] offsets;
         delete[] recvCount;
-        delete[] C;
+        delete C;
     }
 
     MPI_Comm_free(&row_comm);
