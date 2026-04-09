@@ -4,6 +4,10 @@
 #include <cstring>
 #include <cmath>
 #include <chrono>
+#include <random>
+
+int RANK=0;
+int SIZE=1;
 
 class Matrix {
 protected:
@@ -65,6 +69,17 @@ public:
         return *this;
     }
 
+    void fillRandom() {
+        std::mt19937 gen(std::chrono::system_clock::now().time_since_epoch().count() + RANK);
+        std::uniform_int_distribution<int> dist(-10, 10);
+
+        for (int y = 0; y < _height; y++) {
+            for (int x = 0; x < _width; x++) {
+                get(x, y) = static_cast<double>(dist(gen));
+            }
+        }
+    }
+
     double* data() { return _values; }
     int width() const { return _width; }
     int height() const { return _height; }
@@ -120,6 +135,181 @@ public:
         return result;
     }
 
+    static Matrix* multiplyMPI(const Matrix* const a, const Matrix* const b) {
+        int rows = SIZE;
+        int cols = 1;
+        for (int i = sqrt(SIZE); i >= 1; i--) {
+            if (SIZE % i == 0) {
+                rows = SIZE / i;
+                cols = i;
+                break;
+            }  
+        }
+
+        MPI_Comm cart_comm, row_comm, col_comm;
+
+        int dims[2] = {cols, rows};
+        int periods[2] = {0, 0};
+        MPI_Cart_create(MPI_COMM_WORLD, 2, dims, periods, 0, &cart_comm);
+
+        int coords[2];
+        MPI_Cart_coords(cart_comm, RANK, 2, coords);
+
+        int row_dims[2] = {1, 0};
+        MPI_Cart_sub(cart_comm, row_dims, &row_comm);
+
+        int col_dims[2] = {0, 1};
+        MPI_Cart_sub(cart_comm, col_dims, &col_comm);
+
+        Matrix* aSplited = nullptr;
+        Matrix* bSplited = nullptr;
+
+        Matrix* c = nullptr;
+        int* recvCount = nullptr;
+        int* offsets = nullptr;
+        int* blockW = nullptr;
+        int* blockH = nullptr;
+        int* offsetX = nullptr;
+        int* offsetY = nullptr;
+
+        if (coords[0] == 0 && coords[1] == 0) {
+            c = new Matrix(b->width(), a->height());
+
+            blockW = new int[cols];
+            blockH = new int[rows];
+            offsetX = new int[cols + 1];
+            offsetY = new int[rows + 1];
+
+            offsetY[0] = 0;
+            for (int y = 0; y < rows; y++) {
+                Matrix* part = a->splitHorizontal(y, rows);
+                blockH[y] = part->height();
+                offsetY[y + 1] = offsetY[y] + blockH[y];
+
+                if (y == 0) {
+                    aSplited = part;
+                } else {
+                    int sizes[2] = {part->width(), part->height()};
+                    MPI_Send(sizes, 2, MPI_INT, y, 0, col_comm);
+                    MPI_Send(part->data(), part->width() * part->height(), MPI_DOUBLE, y, 1, col_comm);
+                    delete part;
+                }
+            }
+
+            offsetX[0] = 0;
+            for (int x = 0; x < cols; x++) {
+                Matrix* part = b->splitVertical(x, cols);
+                blockW[x] = part->width();
+                offsetX[x + 1] = offsetX[x] + blockW[x];
+
+                if (x == 0) {
+                    bSplited = part;
+                } else {
+                    int sizes[2] = {part->width(), part->height()};
+                    MPI_Send(sizes, 2, MPI_INT, x, 2, row_comm);
+                    MPI_Send(part->data(), part->width() * part->height(), MPI_DOUBLE, x, 3, row_comm);
+                    delete part;
+                }
+            }
+
+            recvCount = new int[rows * cols];
+            offsets = new int[rows * cols];
+            int idx = 0;
+            for (int col = 0; col < cols; col++) {
+                for (int row = 0; row < rows; row++) {
+                    recvCount[idx] = blockW[col] * blockH[row];
+                    idx++;
+                }
+            }
+            offsets[0] = 0;
+            for (int i = 1; i < rows * cols; i++) {
+                offsets[i] = offsets[i - 1] + recvCount[i - 1];
+            }
+
+        } else {
+
+            if (coords[0] == 0) {
+
+                int sizes[2] = {0, 0};
+                MPI_Recv(sizes, 2, MPI_INT, 0, 0, col_comm, MPI_STATUS_IGNORE);
+
+                aSplited = new Matrix(sizes[0], sizes[1]);
+                MPI_Recv(aSplited->data(), sizes[0] * sizes[1], MPI_DOUBLE, 0, 1, col_comm, MPI_STATUS_IGNORE);
+            }
+            else if (coords[1] == 0) {
+
+                int sizes[2] = {0, 0};
+                MPI_Recv(sizes, 2, MPI_INT, 0, 2, row_comm, MPI_STATUS_IGNORE);
+
+                bSplited = new Matrix(sizes[0], sizes[1]);
+                MPI_Recv(bSplited->data(), sizes[0] * sizes[1], MPI_DOUBLE, 0, 3, row_comm, MPI_STATUS_IGNORE);
+            }
+        }
+
+        MPI_Barrier(MPI_COMM_WORLD);
+        int sizes[2];
+        if (coords[0] == 0) {
+            sizes[0] = aSplited->width();
+            sizes[1] = aSplited->height();
+        }
+        MPI_Bcast(sizes, 2, MPI_INT, 0, row_comm);
+        if (coords[0] != 0) {
+            aSplited = new Matrix(sizes[0], sizes[1]);
+        }
+        MPI_Bcast(aSplited->data(), sizes[0] * sizes[1], MPI_DOUBLE, 0, row_comm);
+
+        if (coords[1] == 0) {
+            sizes[0] = bSplited->width();
+            sizes[1] = bSplited->height();
+        }
+        MPI_Bcast(sizes, 2, MPI_INT, 0, col_comm);
+        if (coords[1] != 0) {
+            bSplited = new Matrix(sizes[0], sizes[1]);
+        }
+        MPI_Bcast(bSplited->data(), sizes[0] * sizes[1], MPI_DOUBLE, 0, col_comm);
+
+        Matrix cSplited = Matrix::multiply(*aSplited, *bSplited);
+
+        delete aSplited;
+        delete bSplited;
+
+        int rootCoord[2] = {0, 0};
+        int rootRank;
+        MPI_Cart_rank(cart_comm, rootCoord, &rootRank);
+
+        double* recvBuffer = nullptr;
+        if (coords[0] == 0 && coords[1] == 0) {
+            recvBuffer = new double[c->width() * c->height()];
+        }
+
+        MPI_Gatherv(cSplited.data(), cSplited.width() * cSplited.height(), MPI_DOUBLE, recvBuffer, recvCount, offsets, MPI_DOUBLE, rootRank, cart_comm);
+
+        if (coords[0] == 0 && coords[1] == 0) {
+            for (int col = 0; col < cols; col++) {
+                for (int row = 0; row < rows; row++) {
+                    int idx = col * rows + row;
+                    Matrix subBlock(blockW[col], blockH[row], recvBuffer + offsets[idx]);
+                    c->insertBlock(subBlock, offsetX[col], offsetY[row]);
+                }
+            }
+
+            delete[] recvBuffer;
+            delete[] offsets;
+            delete[] recvCount;
+            delete[] blockW;
+            delete[] blockH;
+            delete[] offsetX;
+            delete[] offsetY;
+        }
+        
+        MPI_Comm_free(&row_comm);
+        MPI_Comm_free(&col_comm);
+        MPI_Comm_free(&cart_comm);
+
+        return c;
+    }
+
+
     std::string toString() const {
         std::string str;
         for (int y = 0; y < _height; y++) {
@@ -132,187 +322,47 @@ public:
     }
 };
 
+bool test(Matrix& A, Matrix& B, Matrix& C) {
+    Matrix linear = Matrix::multiply(A,B);
+    //std::cout << "Clinear:\n" << linear.toString() << std::endl;
+
+    double epsilon = 1e-9;
+    for (int y = 0; y < linear.height(); y++) {
+        for (int x = 0; x < linear.width(); x++) {
+            if(std::fabs(linear(x,y) - C(x,y)) > epsilon) return false;
+        }
+    }
+    return true;
+}
+
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
 
-    int rank, size;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    MPI_Comm_rank(MPI_COMM_WORLD, &RANK);
+    MPI_Comm_size(MPI_COMM_WORLD, &SIZE);
+    
+    if(RANK == 0){
+        Matrix A(100, 100);
+        Matrix B(100, 100);
 
-    int rows = 3, cols = 3;
-    MPI_Comm cart_comm, row_comm, col_comm;
+        A.fillRandom();
+        B.fillRandom();
 
-    int dims[2] = {cols, rows};
-    int periods[2] = {0, 0};
-    MPI_Cart_create(MPI_COMM_WORLD, 2, dims, periods, 0, &cart_comm);
+        //std::cout << "A:\n" << A.toString() << std::endl;
+        //std::cout << "B:\n" << B.toString() << std::endl;
 
-    int coords[2];
-    MPI_Cart_coords(cart_comm, rank, 2, coords);
+        Matrix* C = Matrix::multiplyMPI(&A,&B);
 
-    int row_dims[2] = {1, 0};
-    MPI_Cart_sub(cart_comm, row_dims, &row_comm);
+        //std::cout << "C:\n" << C->toString() << std::endl;
 
-    int col_dims[2] = {0, 1};
-    MPI_Cart_sub(cart_comm, col_dims, &col_comm);
+        std::cout << test(A,B,*C) << std::endl;
 
-    Matrix* aSplited = nullptr;
-    Matrix* bSplited = nullptr;
-
-    Matrix* C = nullptr;
-    int* recvCount = nullptr;
-    int* offsets = nullptr;
-    int* blockW = nullptr;
-    int* blockH = nullptr;
-    int* offsetX = nullptr;
-    int* offsetY = nullptr;
-
-    if (coords[0] == 0 && coords[1] == 0) {
-        Matrix A(2, 3);
-        Matrix B(3, 2);
-
-        A(0,0)=1; A(1,0)=0;
-        A(0,1)=0; A(1,1)=1;
-        A(0,2)=1; A(1,2)=1;
-        
-        B(0,0)=1; B(1,0)=0; B(2,0)=1; 
-        B(0,1)=0; B(1,1)=1; B(2,1)=-1;
-        
-        C = new Matrix(B.width(), A.height());
-
-        blockW = new int[cols];
-        blockH = new int[rows];
-        offsetX = new int[cols + 1];
-        offsetY = new int[rows + 1];
-
-        offsetY[0] = 0;
-        for (int y = 0; y < rows; y++) {
-            Matrix* part = A.splitHorizontal(y, rows);
-            blockH[y] = part->height();
-            offsetY[y + 1] = offsetY[y] + blockH[y];
-
-            if (y == 0) {
-                aSplited = part;
-            } else {
-                int sizes[2] = {part->width(), part->height()};
-                MPI_Send(sizes, 2, MPI_INT, y, 0, col_comm);
-                MPI_Send(part->data(), part->width() * part->height(), MPI_DOUBLE, y, 1, col_comm);
-                delete part;
-            }
-        }
-
-        offsetX[0] = 0;
-        for (int x = 0; x < cols; x++) {
-            Matrix* part = B.splitVertical(x, cols);
-            blockW[x] = part->width();
-            offsetX[x + 1] = offsetX[x] + blockW[x];
-
-            if (x == 0) {
-                bSplited = part;
-            } else {
-                int sizes[2] = {part->width(), part->height()};
-                MPI_Send(sizes, 2, MPI_INT, x, 2, row_comm);
-                MPI_Send(part->data(), part->width() * part->height(), MPI_DOUBLE, x, 3, row_comm);
-                delete part;
-            }
-        }
-
-        recvCount = new int[rows * cols];
-        offsets = new int[rows * cols];
-        for (int y = 0; y < rows; y++) {
-            for (int x = 0; x < cols; x++) {
-                int idx = y * cols + x;
-                recvCount[idx] = blockW[x] * blockH[y];
-            }
-        }
-        offsets[0] = 0;
-        for (int i = 1; i < rows * cols; i++) {
-            offsets[i] = offsets[i - 1] + recvCount[i - 1];
-        }
-
-    } else {
-
-        if (coords[0] == 0) {
-
-            int sizes[2] = {0, 0};
-            MPI_Recv(sizes, 2, MPI_INT, 0, 0, col_comm, MPI_STATUS_IGNORE);
-            
-            aSplited = new Matrix(sizes[0], sizes[1]);
-            MPI_Recv(aSplited->data(), sizes[0] * sizes[1], MPI_DOUBLE, 0, 1, col_comm, MPI_STATUS_IGNORE);
-        }
-        else if (coords[1] == 0) {
-
-            int sizes[2] = {0, 0};
-            MPI_Recv(sizes, 2, MPI_INT, 0, 2, row_comm, MPI_STATUS_IGNORE);
-
-            bSplited = new Matrix(sizes[0], sizes[1]);
-            MPI_Recv(bSplited->data(), sizes[0] * sizes[1], MPI_DOUBLE, 0, 3, row_comm, MPI_STATUS_IGNORE);
-        }
-    }
-
-    MPI_Barrier(MPI_COMM_WORLD);
-    int sizes[2];
-    if (coords[0] == 0) {
-        sizes[0] = aSplited->width();
-        sizes[1] = aSplited->height();
-    }
-    MPI_Bcast(sizes, 2, MPI_INT, 0, row_comm);
-    if (coords[0] != 0) {
-        aSplited = new Matrix(sizes[0], sizes[1]);
-    }
-    MPI_Bcast(aSplited->data(), sizes[0] * sizes[1], MPI_DOUBLE, 0, row_comm);
-
-    if (coords[1] == 0) {
-        sizes[0] = bSplited->width();
-        sizes[1] = bSplited->height();
-    }
-    MPI_Bcast(sizes, 2, MPI_INT, 0, col_comm);
-    if (coords[1] != 0) {
-        bSplited = new Matrix(sizes[0], sizes[1]);
-    }
-    MPI_Bcast(bSplited->data(), sizes[0] * sizes[1], MPI_DOUBLE, 0, col_comm);
-
-    Matrix cSplited = Matrix::multiply(*aSplited, *bSplited);
-
-    delete aSplited;
-    delete bSplited;
-
-    int rootCoord[2] = {0, 0};
-    int rootRank;
-    MPI_Cart_rank(cart_comm, rootCoord, &rootRank);
-
-    double* recvBuffer = nullptr;
-    if (coords[0] == 0 && coords[1] == 0) {
-        recvBuffer = new double[C->width() * C->height()];
-    }
-
-    MPI_Gatherv(cSplited.data(), cSplited.width() * cSplited.height(), MPI_DOUBLE, recvBuffer, recvCount, offsets, MPI_DOUBLE, rootRank, cart_comm);
-
-    if (coords[0] == 0 && coords[1] == 0) {
-        for (int y = 0; y < rows; y++) {
-            for (int x = 0; x < cols; x++) {
-                int idx = y * cols + x;
-
-                Matrix subBlock(blockW[x], blockH[y], recvBuffer + offsets[idx]);
-
-                C->insertBlock(subBlock, offsetX[x], offsetY[y]);
-            }
-        }
-
-        std::cout << C->toString();
-
-        delete[] recvBuffer;
-        delete[] offsets;
-        delete[] recvCount;
-        delete[] blockW;
-        delete[] blockH;
-        delete[] offsetX;
-        delete[] offsetY;
         delete C;
     }
-
-    MPI_Comm_free(&row_comm);
-    MPI_Comm_free(&col_comm);
-    MPI_Comm_free(&cart_comm);
+    else{
+        Matrix* C = Matrix::multiplyMPI(nullptr,nullptr);
+    }
+    
     MPI_Finalize();
     return 0;
 }
