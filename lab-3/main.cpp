@@ -324,7 +324,6 @@ public:
 
 bool test(Matrix& A, Matrix& B, Matrix& C) {
     Matrix linear = Matrix::multiply(A,B);
-    //std::cout << "Clinear:\n" << linear.toString() << std::endl;
 
     double epsilon = 1e-9;
     for (int y = 0; y < linear.height(); y++) {
@@ -340,27 +339,49 @@ int main(int argc, char** argv) {
 
     MPI_Comm_rank(MPI_COMM_WORLD, &RANK);
     MPI_Comm_size(MPI_COMM_WORLD, &SIZE);
-    
+
+    Matrix* A = nullptr;
+    Matrix* B = nullptr;
+
     if(RANK == 0){
-        Matrix A(100, 100);
-        Matrix B(100, 100);
-
-        A.fillRandom();
-        B.fillRandom();
-
-        //std::cout << "A:\n" << A.toString() << std::endl;
-        //std::cout << "B:\n" << B.toString() << std::endl;
-
-        Matrix* C = Matrix::multiplyMPI(&A,&B);
-
-        //std::cout << "C:\n" << C->toString() << std::endl;
-
-        std::cout << test(A,B,*C) << std::endl;
-
-        delete C;
+        A = new Matrix(10000, 10000);
+        B = new Matrix(10000, 10000);
+        
+        A->fillRandom();
+        B->fillRandom();
     }
-    else{
-        Matrix* C = Matrix::multiplyMPI(nullptr,nullptr);
+    
+    std::chrono::microseconds duration = std::chrono::microseconds::max();
+    for(int i = 0; i < 5; i++){
+
+        auto start = std::chrono::high_resolution_clock::now();
+
+        Matrix* C = Matrix::multiplyMPI(A,B);
+
+        auto end = std::chrono::high_resolution_clock::now();
+
+        if(RANK==0){
+
+            if(!test(*A,*B,*C)){
+                std::cout << "FAIL\n";
+                delete A;
+                delete B;
+                delete C;
+                MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+                return 1;
+            }
+
+            delete C;
+        }
+
+        auto local = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        duration = duration > local ? local : duration;
+    }
+
+    if(RANK == 0){
+        delete A;
+        delete B;
+        std::cout << "Time: " << (duration.count() * 1e-6) << std::endl;
     }
     
     MPI_Finalize();
