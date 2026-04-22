@@ -97,6 +97,7 @@ public:
     }
 
     double *data() { return _values; }
+    const double *data() const { return _values; }
     int width() const { return _width; }
     int height() const { return _height; }
 
@@ -105,41 +106,6 @@ public:
         if (x < 0 || y < 0 || x >= _width || y >= _height)
             throw std::invalid_argument("Index out of range");
         return get(x, y);
-    }
-
-    Matrix *splitVertical(int part, int parts) const
-    {
-        int baseSize = _width / parts;
-        int remainder = _width % parts;
-        int partSize = baseSize + (part < remainder ? 1 : 0);
-        int offset = part * baseSize + std::min(part, remainder);
-        Matrix *mat = new Matrix(partSize, _height);
-        for (int y = 0; y < _height; y++)
-            for (int x = 0; x < partSize; x++)
-                mat->get(x, y) = get(x + offset, y);
-        return mat;
-    }
-
-    Matrix *splitHorizontal(int part, int parts) const
-    {
-        int baseSize = _height / parts;
-        int remainder = _height % parts;
-        int partSize = baseSize + (part < remainder ? 1 : 0);
-        int offset = part * baseSize + std::min(part, remainder);
-        Matrix *mat = new Matrix(_width, partSize);
-        std::memcpy(mat->_values, &(get(0, offset)), sizeof(double) * _width * partSize);
-        return mat;
-    }
-
-    void insertBlock(const Matrix &other, int posX, int posY)
-    {
-        for (int y = 0; y < other._height; y++)
-        {
-            for (int x = 0; x < other._width; x++)
-            {
-                get(posX + x, posY + y) = other.get(x, y);
-            }
-        }
     }
 
     static Matrix multiply(const Matrix &a, const Matrix &b)
@@ -160,6 +126,14 @@ public:
 
     static Matrix *multiplyMPI(const Matrix *const a, const Matrix *const b)
     {
+        int N[3];
+        if(RANK== 0){
+            N[0] = a->height();
+            N[1] = a->width();
+            N[2] = b->width();
+        }
+        MPI_Bcast(N,3,MPI_INT,0,MPI_COMM_WORLD);
+
         int rows = SIZE;
         int cols = 1;
         for (int i = sqrt(SIZE); i >= 1; i--)
@@ -172,195 +146,116 @@ public:
             }
         }
 
-        MPI_Comm cart_comm, row_comm, col_comm;
-
-        int dims[2] = {cols, rows};
+        if (N[0] % rows != 0 || N[2] % cols != 0)
+        {
+            if (RANK == 0)
+            std::cerr << "Matrix dimensions must be divisible by the process grid dimensions\n";
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+        
+        int blockRows = N[0] / rows;
+        int blockCols = N[2] / cols;
+        
+        // Создаём декартову топологию
         int periods[2] = {0, 0};
+        MPI_Comm cart_comm, row_comm, col_comm;
+        int dims[2] = {cols, rows};
         MPI_Cart_create(MPI_COMM_WORLD, 2, dims, periods, 0, &cart_comm);
-
+        
         int coords[2];
         MPI_Cart_coords(cart_comm, RANK, 2, coords);
+        
+        // Разделяем на коммуникаторы строк и столбцов
+        MPI_Comm_split(cart_comm, coords[0], RANK, &row_comm);
+        MPI_Comm_split(cart_comm, coords[1], RANK, &col_comm);
 
-        int row_dims[2] = {1, 0};
-        MPI_Cart_sub(cart_comm, row_dims, &row_comm);
-
-        int col_dims[2] = {0, 1};
-        MPI_Cart_sub(cart_comm, col_dims, &col_comm);
-
-        Matrix *aSplited = nullptr;
-        Matrix *bSplited = nullptr;
-
-        Matrix *c = nullptr;
-        int *recvCount = nullptr;
-        int *offsets = nullptr;
-        int *blockW = nullptr;
-        int *blockH = nullptr;
-        int *offsetX = nullptr;
-        int *offsetY = nullptr;
-
-        if (coords[0] == 0 && coords[1] == 0)
+        Matrix *localA = nullptr;
+        Matrix *localB = nullptr;
+        
+        // ------------------- Рассылка матрицы A -------------------
+        std::vector<int> sendcounts(rows, 0);
+        std::vector<int> displsA(rows, 0);
+        if (RANK == 0)
         {
-            c = new Matrix(b->width(), a->height());
-
-            blockW = new int[cols];
-            blockH = new int[rows];
-            offsetX = new int[cols + 1];
-            offsetY = new int[rows + 1];
-
-            offsetY[0] = 0;
-            for (int y = 0; y < rows; y++)
+            std::cout << a->toString()<<std::endl;
+            for (int i = 0; i < rows; i++)
             {
-                Matrix *part = a->splitHorizontal(y, rows);
-                blockH[y] = part->height();
-                offsetY[y + 1] = offsetY[y] + blockH[y];
-
-                if (y == 0)
-                {
-                    aSplited = part;
-                }
-                else
-                {
-                    int sizes[2] = {part->width(), part->height()};
-                    MPI_Send(sizes, 2, MPI_INT, y, 0, col_comm);
-                    MPI_Send(part->data(), part->width() * part->height(), MPI_DOUBLE, y, 1, col_comm);
-                    delete part;
-                }
-            }
-
-            offsetX[0] = 0;
-            for (int x = 0; x < cols; x++)
-            {
-                Matrix *part = b->splitVertical(x, cols);
-                blockW[x] = part->width();
-                offsetX[x + 1] = offsetX[x] + blockW[x];
-
-                if (x == 0)
-                {
-                    bSplited = part;
-                }
-                else
-                {
-                    int sizes[2] = {part->width(), part->height()};
-                    MPI_Send(sizes, 2, MPI_INT, x, 2, row_comm);
-                    MPI_Send(part->data(), part->width() * part->height(), MPI_DOUBLE, x, 3, row_comm);
-                    delete part;
-                }
-            }
-
-            recvCount = new int[rows * cols];
-            offsets = new int[rows * cols];
-            int idx = 0;
-            for (int col = 0; col < cols; col++)
-            {
-                for (int row = 0; row < rows; row++)
-                {
-                    recvCount[idx] = blockW[col] * blockH[row];
-                    idx++;
-                }
-            }
-            offsets[0] = 0;
-            for (int i = 1; i < rows * cols; i++)
-            {
-                offsets[i] = offsets[i - 1] + recvCount[i - 1];
+                sendcounts[i] = blockRows * N[1];
+                displsA[i] = i * blockRows * N[1];
             }
         }
-        else
-        {
-
-            if (coords[0] == 0)
-            {
-
-                int sizes[2] = {0, 0};
-                MPI_Recv(sizes, 2, MPI_INT, 0, 0, col_comm, MPI_STATUS_IGNORE);
-
-                aSplited = new Matrix(sizes[0], sizes[1]);
-                MPI_Recv(aSplited->data(), sizes[0] * sizes[1], MPI_DOUBLE, 0, 1, col_comm, MPI_STATUS_IGNORE);
-            }
-            else if (coords[1] == 0)
-            {
-
-                int sizes[2] = {0, 0};
-                MPI_Recv(sizes, 2, MPI_INT, 0, 2, row_comm, MPI_STATUS_IGNORE);
-
-                bSplited = new Matrix(sizes[0], sizes[1]);
-                MPI_Recv(bSplited->data(), sizes[0] * sizes[1], MPI_DOUBLE, 0, 3, row_comm, MPI_STATUS_IGNORE);
-            }
-        }
-
-        MPI_Barrier(MPI_COMM_WORLD);
-        int sizes[2];
-        if (coords[0] == 0)
-        {
-            sizes[0] = aSplited->width();
-            sizes[1] = aSplited->height();
-        }
-        MPI_Bcast(sizes, 2, MPI_INT, 0, row_comm);
-        if (coords[0] != 0)
-        {
-            aSplited = new Matrix(sizes[0], sizes[1]);
-        }
-        MPI_Bcast(aSplited->data(), sizes[0] * sizes[1], MPI_DOUBLE, 0, row_comm);
-
+        
+        localA = new Matrix(N[1], blockRows);
         if (coords[1] == 0)
         {
-            sizes[0] = bSplited->width();
-            sizes[1] = bSplited->height();
+            MPI_Scatterv(RANK==0 ? a->data() : nullptr, sendcounts.data(), displsA.data(), MPI_DOUBLE,
+            localA->data(), blockRows * N[1], MPI_DOUBLE,
+            0, col_comm);
+            std::cout << localA ->toString()<<std::endl;
         }
-        MPI_Bcast(sizes, 2, MPI_INT, 0, col_comm);
-        if (coords[1] != 0)
+        
+        // ------------------- Рассылка матрицы B -------------------
+        MPI_Datatype columnType, columnTypeResized;
+        MPI_Type_vector(N[1], blockCols, N[2], MPI_DOUBLE, &columnType);
+        MPI_Type_create_resized(columnType, 0, blockCols * sizeof(double), &columnTypeResized);
+        MPI_Type_commit(&columnTypeResized);
+        MPI_Type_free(&columnType);
+        localB = new Matrix(blockCols, N[1]);
+        if (coords[0] == 0)
         {
-            bSplited = new Matrix(sizes[0], sizes[1]);
+            
+            MPI_Scatter(RANK==0 ? b->data() : nullptr, 1, columnTypeResized,
+            localB->data(), N[1] * blockCols, MPI_DOUBLE,
+            0, row_comm);
         }
-        MPI_Bcast(bSplited->data(), sizes[0] * sizes[1], MPI_DOUBLE, 0, col_comm);
-
-        Matrix cSplited = Matrix::multiply(*aSplited, *bSplited);
-
-        delete aSplited;
-        delete bSplited;
-
-        int rootCoord[2] = {0, 0};
-        int rootRank;
-        MPI_Cart_rank(cart_comm, rootCoord, &rootRank);
-
-        double *recvBuffer = nullptr;
-        if (coords[0] == 0 && coords[1] == 0)
-        {
-            recvBuffer = new double[c->width() * c->height()];
-        }
-
-        MPI_Gatherv(cSplited.data(), cSplited.width() * cSplited.height(), MPI_DOUBLE, recvBuffer, recvCount, offsets, MPI_DOUBLE, rootRank, cart_comm);
-
-        if (coords[0] == 0 && coords[1] == 0)
-        {
-            for (int col = 0; col < cols; col++)
-            {
-                for (int row = 0; row < rows; row++)
-                {
-                    int idx = col * rows + row;
-                    Matrix subBlock(blockW[col], blockH[row], recvBuffer + offsets[idx]);
-                    c->insertBlock(subBlock, offsetX[col], offsetY[row]);
-                }
-            }
-
-            delete[] recvBuffer;
-            delete[] offsets;
-            delete[] recvCount;
-            delete[] blockW;
-            delete[] blockH;
-            delete[] offsetX;
-            delete[] offsetY;
-        }
-
-        MPI_Barrier(MPI_COMM_WORLD);
-
+        
+        MPI_Type_free(&columnTypeResized);
+        
+        MPI_Bcast(localA->data(), blockRows * N[1], MPI_DOUBLE, 0, row_comm);
+        MPI_Bcast(localB->data(), N[1] * blockCols, MPI_DOUBLE, 0, col_comm);
+        
+        Matrix localC = Matrix::multiply(*localA, *localB);
+        
+        delete localA;
+        delete localB;
+        
+        // ------------------- Сбор результата -------------------
+        Matrix *c = nullptr;
+        if (RANK == 0)
+        c = new Matrix(N[2], N[0]);
+        
+        
+        MPI_Datatype subarrayType, subarrayTypeResized;
+        int gsizes[2] = {N[0], N[2]};
+        int lsizes[2] = {blockRows, blockCols};
+        int starts[2] = {0, 0};
+        MPI_Type_create_subarray(2, gsizes, lsizes, starts, MPI_ORDER_C, MPI_DOUBLE, &subarrayType);
+        MPI_Type_create_resized(subarrayType, 0, sizeof(double), &subarrayTypeResized);
+        MPI_Type_commit(&subarrayTypeResized);
+        MPI_Type_free(&subarrayType);
+        
+        std::vector<int> recvcounts(SIZE, 1);
+        std::vector<int> displs(SIZE, 0);
+        for (int i = 0; i < rows; ++i)
+        for (int j = 0; j < cols; ++j)
+        displs[i * cols + j] = i * blockRows * N[2] + j * blockCols;
+            
+        MPI_Gatherv(localC.data(), blockRows * blockCols, MPI_DOUBLE,
+        (RANK == 0) ? c->data() : nullptr,
+        recvcounts.data(), displs.data(), subarrayTypeResized,
+        0, cart_comm);
+        
+        MPI_Type_free(&subarrayTypeResized);
+        
         MPI_Comm_free(&row_comm);
         MPI_Comm_free(&col_comm);
         MPI_Comm_free(&cart_comm);
-
+        
         return c;
     }
 
-    std::string toString() const
+    std::string
+    toString() const
     {
         std::string str;
         for (int y = 0; y < _height; y++)
@@ -402,8 +297,8 @@ int main(int argc, char **argv)
 
     if (RANK == 0)
     {
-        A = new Matrix(10000, 100);
-        B = new Matrix(100, 10000);
+        A = new Matrix(6, 6);
+        B = new Matrix(6, 6);
 
         A->fillRandom();
         B->fillRandom();
@@ -412,7 +307,6 @@ int main(int argc, char **argv)
     std::chrono::microseconds duration = std::chrono::microseconds::max();
     for (int i = 0; i < 1; i++)
     {
-
         auto start = std::chrono::high_resolution_clock::now();
 
         MPI_Barrier(MPI_COMM_WORLD);
@@ -422,7 +316,6 @@ int main(int argc, char **argv)
 
         if (RANK == 0)
         {
-
             if (!test(*A, *B, *C))
             {
                 std::cout << "FAIL\n";
@@ -432,7 +325,6 @@ int main(int argc, char **argv)
                 MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
                 return 1;
             }
-
             delete C;
         }
 
