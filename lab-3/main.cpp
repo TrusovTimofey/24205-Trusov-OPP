@@ -285,19 +285,20 @@ int main(int argc, char **argv)
 
     if (RANK == 0)
     {
-        A = new Matrix(3600, 1200);
-        B = new Matrix(1200, 3600);
+        A = new Matrix(3600, 120);
+        B = new Matrix(120, 3600);
 
         A->fillRandom();
         B->fillRandom();
     }
 
     std::chrono::microseconds duration = std::chrono::microseconds::max();
-    for (int i = 0; i < 1; i++)
+    for (int i = 0; i < 5; i++)
     {
+        MPI_Barrier(MPI_COMM_WORLD);
+
         auto start = std::chrono::high_resolution_clock::now();
 
-        MPI_Barrier(MPI_COMM_WORLD);
         Matrix *C = Matrix::multiplyMPI(A, B);
 
         auto end = std::chrono::high_resolution_clock::now();
