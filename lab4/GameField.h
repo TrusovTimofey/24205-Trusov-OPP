@@ -31,6 +31,8 @@ private:
 	char* _upBuffer;
 	char* _downBuffer;
 
+	void* _requests;
+
 	int index(int xPos, int yPos) const;
 	const FieldCell& cell(int xPos, int yPos) const;
 	FieldCell& cell(int xPos, int yPos);
@@ -49,7 +51,8 @@ public:
 	void bornCell(int xPos, int yPos);
 	void killCell(int xPos, int yPos);
 
-	void applyChanges();
+	void sendBorders();
+	void applyBorders();
 
 	BitArray getSnapShot() const;
 

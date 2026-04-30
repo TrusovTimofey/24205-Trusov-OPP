@@ -162,7 +162,7 @@ void GameField::killCell(int xPos, int yPos)
 	}
 }
 
-void GameField::applyChanges()
+void GameField::sendBorders()
 {
 	if (Globals::size == 1)
 	{
@@ -185,7 +185,8 @@ void GameField::applyChanges()
 	int upperRank = (rank - 1 + size) % size;
 	int lowerRank = (rank + 1) % size;
 
-	MPI_Request requests[4];
+	_requests = new MPI_Request[4];
+	MPI_Request *requests = (MPI_Request *)_requests;
 	int req_count = 0;
 
 	MPI_Isend(_upDeltaNeighbors, _width, MPI_CHAR, upperRank, 0, MPI_COMM_WORLD, &requests[req_count++]);
@@ -193,8 +194,13 @@ void GameField::applyChanges()
 
 	MPI_Isend(_downDeltaNeighbors, _width, MPI_CHAR, lowerRank, 0, MPI_COMM_WORLD, &requests[req_count++]);
 	MPI_Irecv(_downBuffer, _width, MPI_CHAR, upperRank, 0, MPI_COMM_WORLD, &requests[req_count++]);
+}
 
-	MPI_Waitall(req_count, requests, MPI_STATUSES_IGNORE);
+void GameField::applyBorders()
+{
+	if (Globals::size == 1)
+		return;
+	MPI_Waitall(4, (MPI_Request *)_requests, MPI_STATUSES_IGNORE);
 
 	for (int i = 0; i < _width; i++)
 	{
@@ -209,6 +215,7 @@ void GameField::applyChanges()
 		c.setNeighbors(c.neighborsCount() + _downBuffer[i]);
 		_downDeltaNeighbors[i] = 0;
 	}
+	delete[] (MPI_Request *)_requests;
 }
 
 BitArray GameField::getSnapShot() const

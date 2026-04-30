@@ -41,7 +41,39 @@ bool GameOfLive::nextGeneration(int generations)
 			}
 		}
 
-		for (int y = 0; y < _field->height(); y++)
+		for (int x = 0; x < _field->width(); x++)
+		{
+			auto &cell = _tempCells[x];
+			if (cell.first)
+			{
+				if (!_rule->mustToSurvive(cell.second))
+					_field->killCell(x, 0);
+			}
+			else
+			{
+				if (_rule->mustToBeBorn(cell.second))
+					_field->bornCell(x, 0);
+			}
+		}
+
+		int offset = (_field->height() - 1)*(_field->width());
+		for (int x = 0; x < _field->width(); x++)
+		{
+			auto &cell = _tempCells[x+offset];
+			if (cell.first)
+			{
+				if (!_rule->mustToSurvive(cell.second))
+					_field->killCell(x, _field->height() - 1);
+			}
+			else
+			{
+				if (_rule->mustToBeBorn(cell.second))
+					_field->bornCell(x, _field->height() - 1);
+			}
+		}
+		_field->sendBorders();
+
+		for (int y = 1; y < _field->height() - 1; y++)
 		{
 			for (int x = 0; x < _field->width(); x++)
 			{
@@ -58,27 +90,28 @@ bool GameOfLive::nextGeneration(int generations)
 				}
 			}
 		}
-		_field->applyChanges();
-		
+
+		_field->applyBorders();
+
 		auto snapShot = _field->getSnapShot();
 		auto repeats = repeatedSnapShots(snapShot);
 		_genCounter.resize(_generation);
-		_genCounter.assign(_genCounter.size(),0);
-		
+		_genCounter.assign(_genCounter.size(), 0);
+
 		for (auto repeat : repeats)
 		{
 			_genCounter[repeat] = 1;
 		}
-		
+
 		MPI_Allreduce(MPI_IN_PLACE, _genCounter.data(), _generation, MPI_UNSIGNED_CHAR, MPI_SUM, MPI_COMM_WORLD);
-		
-		for (unsigned int i = 0; i < _generation; i++)
+
+		for (auto repeat : repeats)
 		{
-			if (_genCounter[i] >= Globals::size)
-			return false;
+			if (_genCounter[repeat] >= Globals::size)
+				return false;
 		}
 		_snapShots.push_back({_generation, snapShot});
-		
+		MPI_Barrier(MPI_COMM_WORLD);
 	}
 	return true;
 }

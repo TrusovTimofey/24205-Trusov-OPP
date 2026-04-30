@@ -16,7 +16,7 @@ int main(int, char **)
     MPI_Comm_rank(MPI_COMM_WORLD, &Globals::rank);
     MPI_Comm_size(MPI_COMM_WORLD, &Globals::size);
 
-    const int size = 12;
+    const int size = 120;
 
     if (size % Globals::size)
     {
@@ -36,7 +36,7 @@ int main(int, char **)
         field.bornCell(2, 2);
     }
 
-    field.applyChanges();
+    field.sendBorders();
     GameOfLive game(&rule, &field);
 
     auto start = std::chrono::high_resolution_clock::now();
