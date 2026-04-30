@@ -1,4 +1,5 @@
 #include "BitArray.h"
+#include <cstring>
 
 #pragma region ConstructorsDestrucor
 

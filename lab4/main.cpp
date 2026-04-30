@@ -16,7 +16,7 @@ int main(int, char **)
     MPI_Comm_rank(MPI_COMM_WORLD, &Globals::rank);
     MPI_Comm_size(MPI_COMM_WORLD, &Globals::size);
 
-    const int size = 1600;
+    const int size = 12;
 
     if (size % Globals::size)
     {
