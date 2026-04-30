@@ -4,6 +4,7 @@
 #include "Rule.h"
 #include <string>
 #include <list>
+#include <vector>
 
 
 class GameOfLive
@@ -11,6 +12,9 @@ class GameOfLive
 private:
 	Rule* _rule;
 	GameField* _field;
+
+	std::vector<std::pair<bool, char>> _tempCells;
+	std::vector<unsigned char> _genCounter;
 
 	unsigned int _generation = 0;
 

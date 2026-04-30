@@ -28,7 +28,8 @@ private:
 
 	char* _upDeltaNeighbors;
 	char* _downDeltaNeighbors;
-	char* _buffer;
+	char* _upBuffer;
+	char* _downBuffer;
 
 	int index(int xPos, int yPos) const;
 	const FieldCell& cell(int xPos, int yPos) const;

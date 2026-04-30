@@ -10,6 +10,7 @@ using namespace std;
 GameOfLive::GameOfLive(Rule *rule, GameField *field) : _rule(rule), _field(field)
 {
 	_snapShots.push_back({_generation, field->getSnapShot()});
+	_tempCells.resize(_field->width() * _field->height());
 }
 
 std::list<unsigned int> GameOfLive::repeatedSnapShots(BitArray &snapShot) const
@@ -32,13 +33,11 @@ bool GameOfLive::nextGeneration(int generations)
 	for (int i = 0; i < generations; i++)
 	{
 		_generation++;
-		vector<pair<bool, char>> cells;
-		cells.resize(_field->width() * _field->height());
 		for (int y = 0; y < _field->height(); y++)
 		{
 			for (int x = 0; x < _field->width(); x++)
 			{
-				cells[x + y * _field->width()] = pair<bool, char>(_field->cellIsAlive(x, y), _field->cellNeighborsCount(x, y));
+				_tempCells[x + y * _field->width()] = pair<bool, char>(_field->cellIsAlive(x, y), _field->cellNeighborsCount(x, y));
 			}
 		}
 
@@ -46,7 +45,7 @@ bool GameOfLive::nextGeneration(int generations)
 		{
 			for (int x = 0; x < _field->width(); x++)
 			{
-				auto &cell = cells[x + y * _field->width()];
+				auto &cell = _tempCells[x + y * _field->width()];
 				if (cell.first)
 				{
 					if (!_rule->mustToSurvive(cell.second))
@@ -63,18 +62,19 @@ bool GameOfLive::nextGeneration(int generations)
 		
 		auto snapShot = _field->getSnapShot();
 		auto repeats = repeatedSnapShots(snapShot);
-		std::vector<unsigned char> counter(_generation,0);
+		_genCounter.resize(_generation);
+		_genCounter.assign(_genCounter.size(),0);
 		
 		for (auto repeat : repeats)
 		{
-			counter[repeat] = 1;
+			_genCounter[repeat] = 1;
 		}
 		
-		MPI_Allreduce(MPI_IN_PLACE, counter.data(), _generation, MPI_UNSIGNED_CHAR, MPI_SUM, MPI_COMM_WORLD);
+		MPI_Allreduce(MPI_IN_PLACE, _genCounter.data(), _generation, MPI_UNSIGNED_CHAR, MPI_SUM, MPI_COMM_WORLD);
 		
 		for (unsigned int i = 0; i < _generation; i++)
 		{
-			if (counter[i] >= Globals::size)
+			if (_genCounter[i] >= Globals::size)
 			return false;
 		}
 		_snapShots.push_back({_generation, snapShot});

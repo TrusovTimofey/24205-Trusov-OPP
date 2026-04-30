@@ -29,7 +29,8 @@ GameField::GameField(int width, int height)
 
 	_upDeltaNeighbors = new char[width]();
 	_downDeltaNeighbors = new char[width]();
-	_buffer = new char[width];
+	_upBuffer = new char[width];
+	_downBuffer = new char[width];
 
 	for (int i = 0; i < size; i++)
 	{
@@ -40,7 +41,8 @@ GameField::~GameField()
 {
 	delete[] _upDeltaNeighbors;
 	delete[] _downDeltaNeighbors;
-	delete[] _buffer;
+	delete[] _upBuffer;
+	delete[] _downBuffer;
 }
 
 int GameField::index(int xPos, int yPos) const
@@ -64,21 +66,22 @@ vector<GameField::FieldCell *> GameField::getCellNeighbors(int xPos, int yPos)
 {
 	vector<FieldCell *> neighbors;
 
-	if(yPos!=0){
+	if (yPos != 0)
+	{
 		neighbors.push_back(&cell(xPos - 1, yPos - 1));
 		neighbors.push_back(&cell(xPos, yPos - 1));
 		neighbors.push_back(&cell(xPos + 1, yPos - 1));
 	}
-	
-	if(yPos != _height-1){
+
+	if (yPos != _height - 1)
+	{
 		neighbors.push_back(&cell(xPos - 1, yPos + 1));
 		neighbors.push_back(&cell(xPos, yPos + 1));
 		neighbors.push_back(&cell(xPos + 1, yPos + 1));
 	}
-	
+
 	neighbors.push_back(&cell(xPos + 1, yPos));
 	neighbors.push_back(&cell(xPos - 1, yPos));
-
 
 	return neighbors;
 }
@@ -106,21 +109,23 @@ char GameField::cellNeighborsCount(int xPos, int yPos) const
 void GameField::bornCell(int xPos, int yPos)
 {
 	auto &c = cell(xPos, yPos);
-	
+
 	if (c.state() == CellState::Alive)
-	throw logic_error("Cell is alredy alive");
+		throw logic_error("Cell is alredy alive");
 	c.setState(CellState::Alive);
 
-	if(yPos == 0){
-		_upDeltaNeighbors[index(xPos-1,0)]++;
-		_upDeltaNeighbors[index(xPos,0)]++;
-		_upDeltaNeighbors[index(xPos+1,0)]++;
+	if (yPos == 0)
+	{
+		_upDeltaNeighbors[index(xPos - 1, 0)]++;
+		_upDeltaNeighbors[index(xPos, 0)]++;
+		_upDeltaNeighbors[index(xPos + 1, 0)]++;
 	}
 
-	if(yPos == _height-1){
-		_downDeltaNeighbors[index(xPos-1,0)]++;
-		_downDeltaNeighbors[index(xPos,0)]++;
-		_downDeltaNeighbors[index(xPos+1,0)]++;
+	if (yPos == _height - 1)
+	{
+		_downDeltaNeighbors[index(xPos - 1, 0)]++;
+		_downDeltaNeighbors[index(xPos, 0)]++;
+		_downDeltaNeighbors[index(xPos + 1, 0)]++;
 	}
 
 	for (auto neighbor : getCellNeighbors(xPos, yPos))
@@ -137,16 +142,18 @@ void GameField::killCell(int xPos, int yPos)
 		throw logic_error("Cell is alredy dead");
 	c.setState(CellState::Dead);
 
-	if(yPos == 0){
-		_upDeltaNeighbors[index(xPos-1,0)]--;
-		_upDeltaNeighbors[index(xPos,0)]--;
-		_upDeltaNeighbors[index(xPos+1,0)]--;
+	if (yPos == 0)
+	{
+		_upDeltaNeighbors[index(xPos - 1, 0)]--;
+		_upDeltaNeighbors[index(xPos, 0)]--;
+		_upDeltaNeighbors[index(xPos + 1, 0)]--;
 	}
 
-	if(yPos == _height-1){
-		_downDeltaNeighbors[index(xPos-1,0)]--;
-		_downDeltaNeighbors[index(xPos,0)]--;
-		_downDeltaNeighbors[index(xPos+1,0)]--;
+	if (yPos == _height - 1)
+	{
+		_downDeltaNeighbors[index(xPos - 1, 0)]--;
+		_downDeltaNeighbors[index(xPos, 0)]--;
+		_downDeltaNeighbors[index(xPos + 1, 0)]--;
 	}
 
 	for (auto neighbor : getCellNeighbors(xPos, yPos))
@@ -164,7 +171,7 @@ void GameField::applyChanges()
 			auto &c1 = cell(i, _height - 1);
 			c1.setNeighbors(c1.neighborsCount() + _upDeltaNeighbors[i]);
 			_upDeltaNeighbors[i] = 0;
-			
+
 			auto &c2 = cell(i, 0);
 			c2.setNeighbors(c2.neighborsCount() + _downDeltaNeighbors[i]);
 			_downDeltaNeighbors[i] = 0;
@@ -172,44 +179,38 @@ void GameField::applyChanges()
 		return;
 	}
 
-	if (Globals::rank % 2)
-	{
-		MPI_Send(_upDeltaNeighbors, _width, MPI_CHAR, Globals::rank == 0 ? Globals::size - 1 : Globals::rank - 1, 0, MPI_COMM_WORLD);
-		MPI_Recv(_buffer, _width, MPI_CHAR, Globals::rank == Globals::size - 1 ? 0 : Globals::rank + 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-	}
-	else
-	{
-		MPI_Recv(_buffer, _width, MPI_CHAR, Globals::rank == Globals::size - 1 ? 0 : Globals::rank + 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		MPI_Send(_upDeltaNeighbors, _width, MPI_CHAR, Globals::rank == 0 ? Globals::size - 1 : Globals::rank - 1, 0, MPI_COMM_WORLD);
-	}
+	int rank = Globals::rank;
+	int size = Globals::size;
+
+	int upperRank = (rank - 1 + size) % size;
+	int lowerRank = (rank + 1) % size;
+
+	MPI_Request requests[4];
+	int req_count = 0;
+
+	MPI_Isend(_upDeltaNeighbors, _width, MPI_CHAR, upperRank, 0, MPI_COMM_WORLD, &requests[req_count++]);
+	MPI_Irecv(_upBuffer, _width, MPI_CHAR, lowerRank, 0, MPI_COMM_WORLD, &requests[req_count++]);
+
+	MPI_Isend(_downDeltaNeighbors, _width, MPI_CHAR, lowerRank, 0, MPI_COMM_WORLD, &requests[req_count++]);
+	MPI_Irecv(_downBuffer, _width, MPI_CHAR, upperRank, 0, MPI_COMM_WORLD, &requests[req_count++]);
+
+	MPI_Waitall(req_count, requests, MPI_STATUSES_IGNORE);
 
 	for (int i = 0; i < _width; i++)
 	{
 		auto &c = cell(i, _height - 1);
-		c.setNeighbors(c.neighborsCount() + _buffer[i]);
+		c.setNeighbors(c.neighborsCount() + _upBuffer[i]);
 		_upDeltaNeighbors[i] = 0;
-	}
-
-	if (Globals::rank % 2)
-	{
-		MPI_Send(_downDeltaNeighbors, _width, MPI_CHAR, Globals::rank == Globals::size - 1 ? 0 : Globals::rank + 1, 0, MPI_COMM_WORLD);
-		MPI_Recv(_buffer, _width, MPI_CHAR, Globals::rank == 0 ? Globals::size - 1 : Globals::rank - 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-	}
-	else
-	{
-		MPI_Recv(_buffer, _width, MPI_CHAR, Globals::rank == 0 ? Globals::size - 1 : Globals::rank - 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		MPI_Send(_downDeltaNeighbors, _width, MPI_CHAR, Globals::rank == Globals::size - 1 ? 0 : Globals::rank + 1, 0, MPI_COMM_WORLD);
 	}
 
 	for (int i = 0; i < _width; i++)
 	{
 		auto &c = cell(i, 0);
-		c.setNeighbors(c.neighborsCount() + _buffer[i]);
+		c.setNeighbors(c.neighborsCount() + _downBuffer[i]);
 		_downDeltaNeighbors[i] = 0;
 	}
 }
 
-#include <iostream>
 BitArray GameField::getSnapShot() const
 {
 	return BitArray(_fieldState);
