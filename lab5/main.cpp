@@ -27,7 +27,7 @@ private:
 public:
     int weight;
 
-    Task() : weight(getRandomInt(MIN_WEIGHT, MAX_WEIGHT)) {}
+    Task() : weight(getRandomInt(MIN_WEIGHT, MAX_WEIGHT*(rank==0 ? 1.5f : (1 + rank%2)))) {}
 
     void execute()
     {
