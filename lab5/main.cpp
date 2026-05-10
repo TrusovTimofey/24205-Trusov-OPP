@@ -14,7 +14,7 @@ static int rank, size;
 class Task
 {
 private:
-    static const int TOTAL_WEIGHT = 10000;
+    static const int TOTAL_WEIGHT = 100;
 
 public:
     int weight;
@@ -45,7 +45,6 @@ public:
         while (std::chrono::steady_clock::now() < end)
         {
             volatile double i = 0;
-            //i += std::sin(i) + std::cos(i);
         }
     }
 };
@@ -283,8 +282,8 @@ int main(int argc, char **argv)
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    int ITERATIONS = 1;
-    int TASKS = 160;
+    int ITERATIONS = 16;
+    int TASKS = 1600;
 
     std::vector<int> loads;
     {
