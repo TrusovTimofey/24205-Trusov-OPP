@@ -35,7 +35,7 @@ public:
         if (size != 1)
             sum--;
 
-        weight = (rawWeight * TOTAL_WEIGHT) / sum;
+        weight = (rawWeight * TOTAL_WEIGHT * size) / sum;
     }
 
     void execute()
@@ -283,7 +283,7 @@ int main(int argc, char **argv)
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
     int ITERATIONS = 16;
-    int TASKS = 1600;
+    int TASKS = 160;
 
     std::vector<int> loads;
     {
