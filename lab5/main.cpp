@@ -14,7 +14,7 @@ static int rank, size;
 class Task
 {
 private:
-    static const int TOTAL_WEIGHT = 100;
+    static const int TOTAL_WEIGHT = 10000;
 
 public:
     int weight;
@@ -42,10 +42,10 @@ public:
     {
         auto start = std::chrono::steady_clock::now();
         auto end = start + std::chrono::milliseconds(weight);
-        volatile double i = 0;
         while (std::chrono::steady_clock::now() < end)
         {
-            i += std::sin(i) + std::cos(i);
+            volatile double i = 0;
+            //i += std::sin(i) + std::cos(i);
         }
     }
 };
@@ -125,7 +125,7 @@ private:
     static const int ANSWER_TAG = 2;
     static const int DATA_TAG = 3;
     static const int STOP_SIGNAL = -1;
-    static const int MIN_TASKS_TO_SHARE = 5;
+    static const int MIN_TASKS_TO_SHARE = 2;
 
     void listen()
     {
@@ -143,7 +143,7 @@ private:
 
             if (toShare <= 0)
                 continue;
-
+            std::cout << "give " << toShare << " from " << rank << " to " << target << "\n";
             MPI_Send(stolen.data(), toShare, MPI_INT, target, DATA_TAG, MPI_COMM_WORLD);
         }
     }
@@ -204,12 +204,14 @@ void Worker::run(int iterations)
 
     for (int i = 0; i < iterations; ++i)
     {
+        MPI_Barrier(MPI_COMM_WORLD);
         int _curLoad = 0;
 
         _sync.lock();
         std::fill(_tasks.begin(), _tasks.end(), Task(i));
         _tasksToDo = _tasksCount;
         _sync.unlock();
+
 
         while (true)
         {
@@ -232,12 +234,11 @@ void Worker::run(int iterations)
         }
 
         _loads[i] = _curLoad;
-
-        MPI_Barrier(MPI_COMM_WORLD);
     }
 
     double end = MPI_Wtime();
     std::cout << "Rank " << rank << ": completed in " << end - start << std::endl;
+    MPI_Barrier(MPI_COMM_WORLD);
 }
 
 void calculateLoadImbalance(int iterations, int size, std::vector<std::vector<int>> &procLoads)
@@ -282,7 +283,7 @@ int main(int argc, char **argv)
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    int ITERATIONS = 16;
+    int ITERATIONS = 1;
     int TASKS = 160;
 
     std::vector<int> loads;
