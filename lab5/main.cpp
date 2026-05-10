@@ -18,31 +18,31 @@ private:
 
 public:
     int weight;
-    Task() : weight(1){}
-    Task(int tasks, int iteration) 
+    Task() : weight(1) {}
+    Task(int iteration)
     {
         int topProc = iteration % size;
         int dist = std::abs(rank - topProc);
         dist = std::min(dist, size - dist);
 
-        int max = size/2+1;
+        int max = size / 2 + 1;
         int rawWeight = max - dist;
-        
-        
-        int sum = max*(max + 1);
+
+        int sum = max * (max + 1);
         max--;
-        sum += max*(max + 1);
-        sum/=2;
-        if(size!=1)sum--;
-        
-        weight = (rawWeight * TOTAL_WEIGHT ) / sum;
+        sum += max * (max + 1);
+        sum /= 2;
+        if (size != 1)
+            sum--;
+
+        weight = (rawWeight * TOTAL_WEIGHT) / sum;
     }
 
     void execute()
     {
         auto start = std::chrono::steady_clock::now();
         auto end = start + std::chrono::milliseconds(weight);
-        volatile double i;
+        volatile double i = 0;
         while (std::chrono::steady_clock::now() < end)
         {
             i += std::sin(i) + std::cos(i);
@@ -61,6 +61,8 @@ private:
 
     Dispatcher *_dispatcher;
     std::mutex _sync;
+
+    std::vector<int> _loads;
 
 public:
     Worker(int tasksCount);
@@ -82,12 +84,12 @@ public:
         weights.resize(toShare);
 
         _tasksToDo -= toShare;
-        
+
         for (int i = 0; i < toShare; i++)
         {
             weights[i] = _tasks[_tasksToDo + i].weight;
         }
-        
+
         _sync.unlock();
         return weights;
     }
@@ -105,6 +107,11 @@ public:
     }
 
     void run(int iterations);
+
+    std::vector<int> getLoads() const
+    {
+        return _loads;
+    }
 };
 
 class Dispatcher
@@ -134,7 +141,8 @@ private:
             int toShare = stolen.size();
             MPI_Send(&toShare, 1, MPI_INT, target, ANSWER_TAG, MPI_COMM_WORLD);
 
-            if (toShare <= 0) continue;
+            if (toShare <= 0)
+                continue;
 
             MPI_Send(stolen.data(), toShare, MPI_INT, target, DATA_TAG, MPI_COMM_WORLD);
         }
@@ -176,6 +184,7 @@ public:
         return false;
     }
 };
+
 const int Dispatcher::STOP_SIGNAL;
 Worker::Worker(int tasksCount) : _tasksCount(tasksCount)
 {
@@ -191,23 +200,27 @@ Worker::~Worker()
 void Worker::run(int iterations)
 {
     auto start = MPI_Wtime();
+    _loads.resize(iterations, 0);
 
     for (int i = 0; i < iterations; ++i)
     {
+        int _curLoad = 0;
+
         _sync.lock();
-        std::fill(_tasks.begin(), _tasks.end(), Task(_tasksCount, i));
+        std::fill(_tasks.begin(), _tasks.end(), Task(i));
         _tasksToDo = _tasksCount;
         _sync.unlock();
 
         while (true)
         {
-
             _sync.lock();
             if (_tasksToDo > 0)
             {
                 _tasksToDo--;
                 Task task = _tasks[_tasksToDo];
                 _sync.unlock();
+
+                _curLoad += task.weight;
                 task.execute();
             }
             else
@@ -217,11 +230,43 @@ void Worker::run(int iterations)
                     break;
             }
         }
+
+        _loads[i] = _curLoad;
+
         MPI_Barrier(MPI_COMM_WORLD);
     }
 
     double end = MPI_Wtime();
     std::cout << "Rank " << rank << ": completed in " << end - start << std::endl;
+}
+
+void calculateLoadImbalance(int iterations, int size, std::vector<std::vector<int>> &procLoads)
+{
+    std::vector<double> imbalances(iterations);
+
+    for (int i = 0; i < iterations; ++i)
+    {
+        double averageLoad = 0;
+        int maxLoad = 0;
+        for (int p = 0; p < size; ++p)
+        {
+            averageLoad += procLoads[p][i];
+            maxLoad=std::max(maxLoad, procLoads[p][i]);
+        }
+        averageLoad /= size;
+
+        imbalances[i] = maxLoad / averageLoad;
+    }
+    
+
+    double avgImbalance = 0;
+    for (double imbalance : imbalances)
+    {
+        avgImbalance += imbalance;
+    }
+    avgImbalance /= iterations;
+
+    std::cout << "Average Imbalance: " << avgImbalance << std::endl;
 }
 
 int main(int argc, char **argv)
@@ -237,11 +282,39 @@ int main(int argc, char **argv)
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    int ITERATIONS = 10;
-    int TASKS = 10;
+    int ITERATIONS = 16;
+    int TASKS = 160;
+
+    std::vector<int> loads;
     {
         Worker worker(TASKS / size);
         worker.run(ITERATIONS);
+        loads = worker.getLoads();
+    }
+
+    std::vector<std::vector<int>> procLoads(size);
+    for (int i = 0; i < size; ++i)
+    {
+        procLoads[i].resize(ITERATIONS);
+    }
+
+    if (rank == 0)
+    {
+        for (int i = 0; i < ITERATIONS; ++i)
+        {
+            procLoads[0][i] = loads[i];
+        }
+
+        for (int i = 1; i < size; ++i)
+        {
+            MPI_Recv(procLoads[i].data(), ITERATIONS, MPI_INT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
+
+        calculateLoadImbalance(ITERATIONS, size, procLoads);
+    }
+    else
+    {
+        MPI_Send(loads.data(), ITERATIONS, MPI_INT, 0, 0, MPI_COMM_WORLD);
     }
 
     MPI_Finalize();
