@@ -5,37 +5,47 @@
 #include <mutex>
 #include <mpi.h>
 #include <vector>
-#include <random>
 #include <chrono>
 #include <algorithm>
+#include <vector>
 
 static int rank, size;
 
 class Task
 {
 private:
-    static const int MAX_WEIGHT = 1000;
-    static const int MIN_WEIGHT = 10;
-
-    int getRandomInt(int min, int max)
-    {
-        static std::mt19937 gen(std::random_device{}());
-        std::uniform_int_distribution<int> dist(min, max);
-        return dist(gen);
-    }
+    static const int TOTAL_WEIGHT = 100;
 
 public:
     int weight;
+    Task() : weight(1){}
+    Task(int tasks, int iteration) 
+    {
+        int topProc = iteration % size;
+        int dist = std::abs(rank - topProc);
+        dist = std::min(dist, size - dist);
 
-    Task() : weight(getRandomInt(MIN_WEIGHT, MAX_WEIGHT*(rank==0 ? 1.5f : (1 + rank%2)))) {}
+        int max = size/2+1;
+        int rawWeight = max - dist;
+        
+        
+        int sum = max*(max + 1);
+        max--;
+        sum += max*(max + 1);
+        sum/=2;
+        if(size!=1)sum--;
+        
+        weight = (rawWeight * TOTAL_WEIGHT ) / sum;
+    }
 
     void execute()
     {
         auto start = std::chrono::steady_clock::now();
         auto end = start + std::chrono::milliseconds(weight);
+        volatile double i;
         while (std::chrono::steady_clock::now() < end)
         {
-            volatile int i = getRandomInt(0, 1);
+            i += std::sin(i) + std::cos(i);
         }
     }
 };
@@ -50,41 +60,48 @@ private:
     int _tasksToDo = 0;
 
     Dispatcher *_dispatcher;
+    std::mutex _sync;
 
 public:
-    std::mutex _sync;
-    std::atomic<bool> isRunning{true};
-
     Worker(int tasksCount);
 
     ~Worker();
 
-    int tasksLeft()
+    std::vector<int> stealTasks(int minCount)
     {
-        return _tasksToDo;
-    }
+        _sync.lock();
+        int toShare = _tasksToDo / 2;
 
-    int *stealTasks(int count)
-    {
-        int *weights = new int[count];
-        _tasksToDo -= count;
+        if (toShare < minCount)
+        {
+            _sync.unlock();
+            return std::vector<int>(0);
+        }
 
-        for (int i = 0; i < count; i++)
+        std::vector<int> weights;
+        weights.resize(toShare);
+
+        _tasksToDo -= toShare;
+        
+        for (int i = 0; i < toShare; i++)
         {
             weights[i] = _tasks[_tasksToDo + i].weight;
         }
-
+        
+        _sync.unlock();
         return weights;
     }
 
     void setTasks(int *weights, int count)
     {
+        _sync.lock();
         _tasks.resize(count);
         for (int i = 0; i < count; i++)
         {
             _tasks[i].weight = weights[i];
         }
         _tasksToDo = count;
+        _sync.unlock();
     }
 
     void run(int iterations);
@@ -105,7 +122,7 @@ private:
 
     void listen()
     {
-        while (_worker->isRunning)
+        while (true)
         {
             int target;
 
@@ -113,23 +130,13 @@ private:
             if (target == STOP_SIGNAL)
                 break;
 
-            _worker->_sync.lock();
-            int toShare = _worker->tasksLeft() / 2;
-
-            if (toShare < MIN_TASKS_TO_SHARE)
-            {
-                _worker->_sync.unlock();
-                toShare = 0;
-                MPI_Send(&toShare, 1, MPI_INT, target, ANSWER_TAG, MPI_COMM_WORLD);
-                continue;
-            }
-
-            int *stolen = _worker->stealTasks(toShare);
-            _worker->_sync.unlock();
-
+            auto stolen = _worker->stealTasks(MIN_TASKS_TO_SHARE);
+            int toShare = stolen.size();
             MPI_Send(&toShare, 1, MPI_INT, target, ANSWER_TAG, MPI_COMM_WORLD);
-            MPI_Send(stolen, toShare, MPI_INT, target, DATA_TAG, MPI_COMM_WORLD);
-            delete[] stolen;
+
+            if (toShare <= 0) continue;
+
+            MPI_Send(stolen.data(), toShare, MPI_INT, target, DATA_TAG, MPI_COMM_WORLD);
         }
     }
 
@@ -162,9 +169,7 @@ public:
             int *weights = new int[received];
             MPI_Recv(weights, received, MPI_INT, i, DATA_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-            _worker->_sync.lock();
             _worker->setTasks(weights, received);
-            _worker->_sync.unlock();
             delete[] weights;
             return true;
         }
@@ -180,7 +185,6 @@ Worker::Worker(int tasksCount) : _tasksCount(tasksCount)
 
 Worker::~Worker()
 {
-    isRunning = false;
     delete _dispatcher;
 }
 
@@ -191,7 +195,7 @@ void Worker::run(int iterations)
     for (int i = 0; i < iterations; ++i)
     {
         _sync.lock();
-        std::fill(_tasks.begin(), _tasks.end(), Task());
+        std::fill(_tasks.begin(), _tasks.end(), Task(_tasksCount, i));
         _tasksToDo = _tasksCount;
         _sync.unlock();
 
@@ -234,8 +238,7 @@ int main(int argc, char **argv)
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
     int ITERATIONS = 10;
-    int TASKS = 100;
-
+    int TASKS = 10;
     {
         Worker worker(TASKS / size);
         worker.run(ITERATIONS);
