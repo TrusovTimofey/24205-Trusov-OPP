@@ -32,9 +32,8 @@ public:
         max--;
         sum += max * (max + 1);
         sum /= 2;
-        if (size != 1)
-            sum--;
-
+        if (size != 1) sum--;
+        
         weight = (rawWeight * TOTAL_WEIGHT * size) / sum;
     }
 
@@ -57,6 +56,7 @@ private:
     std::vector<Task> _tasks;
     const int _tasksCount;
     int _tasksToDo = 0;
+    int _loadCompleted = 0;
 
     Dispatcher *_dispatcher;
     std::mutex _sync;
@@ -207,6 +207,7 @@ void Worker::run(int iterations)
         int _curLoad = 0;
 
         _sync.lock();
+        _tasks.resize(_tasksCount);
         std::fill(_tasks.begin(), _tasks.end(), Task(i));
         _tasksToDo = _tasksCount;
         _sync.unlock();
@@ -222,13 +223,13 @@ void Worker::run(int iterations)
                 _sync.unlock();
 
                 _curLoad += task.weight;
+                _loadCompleted += task.weight;
                 task.execute();
             }
             else
             {
                 _sync.unlock();
-                if (!_dispatcher->getTasks())
-                    break;
+                if (!_dispatcher->getTasks()) break;
             }
         }
 
@@ -236,7 +237,7 @@ void Worker::run(int iterations)
     }
 
     double end = MPI_Wtime();
-    std::cout << "Rank " << rank << ": completed in " << end - start << std::endl;
+    std::cout << "Rank " << rank << ": completed in " << end - start  << ", load completed: " << _loadCompleted << std::endl;
     MPI_Barrier(MPI_COMM_WORLD);
 }
 
